@@ -1,0 +1,807 @@
+---
+title: "Forage Consumption"
+author: "Guy Mercer"
+date: "13/07/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+Reminder: the csvs imported for analysis are linked from the output of data_transformation_cleaning, not db as usual. 
+
+Start with analysing sucrose consumption.
+
+```{r}
+sucrose_consumption <- read.csv("./input/sucrose_consumption.csv")
+```
+
+Ensure variables have correct class. 
+
+```{r}
+library(tidyverse)
+
+# make sure variable classes are correct
+sucrose_consumption$block <- as.factor(sucrose_consumption$block)
+class(sucrose_consumption$block)
+
+sucrose_consumption$treatment <- as.factor(sucrose_consumption$treatment)
+class(sucrose_consumption$treatment)
+
+sucrose_consumption$triad <- as.factor(sucrose_consumption$triad)
+class(sucrose_consumption$triad)
+
+class(sucrose_consumption$summed_consumption)
+
+sucrose_consumption$number_of_workers_at_exposure_start <- as.numeric(sucrose_consumption$number_of_workers_at_exposure_start)
+class(sucrose_consumption$number_of_workers_at_exposure_start)
+```
+
+Sort out the cleveland dotplot encoding. 
+
+```{r}
+# for a cleveland dotplot to work treatment has to be coded 1-3. 
+sucrose_consumption$clevelandcode <- 0 
+
+for (i in 1:nrow(sucrose_consumption)) {
+  
+  if (sucrose_consumption$treatment [i] == "control") {
+    
+    sucrose_consumption$clevelandcode [i] <- 1
+    
+  }
+  
+  if (sucrose_consumption$treatment [i] == "flup") {
+    
+    sucrose_consumption$clevelandcode [i] <- 2
+    
+    }
+  
+  if (sucrose_consumption$treatment [i] == "sivanto") {
+    
+    sucrose_consumption$clevelandcode [i] <- 3
+    
+    }
+  
+}
+
+# should be numeric already anyway
+sucrose_consumption$clevelandcode <- as.numeric(sucrose_consumption$clevelandcode)
+```
+
+Use a cleveland dotplot to identify any obvious outliers. 
+
+```{r}
+dotchart(sucrose_consumption$summed_consumption,
+         groups = factor(sucrose_consumption$clevelandcode),
+         ylab = "Order of observations",
+         xlab = "Consumption (mg)", main = "Cleveland dotplot", pch = sucrose_consumption$clevelandcode)
+```
+
+There does not appear to be any obvious outliers. Maybe consumption is slightly lower for sivanto than the other two treatment groups?
+
+Have a look at some boxplots
+
+```{r}
+boxplot(summed_consumption ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Consumption Conditional on Treatment", 
+        ylab = "Consumption", data = sucrose_consumption)
+```
+
+Also want to show consumption vs number_of_workers_exposure_start for each treatment. For the plots below the panels are filled from bottom to top and left to right. So for summed_consumption vs number_of_workers_at_exposure_start the bottom left is control, bottom right is flup, top right is sivanto.
+
+```{r}
+# by treatment
+coplot(summed_consumption ~ number_of_workers_at_exposure_start | treatment, data = sucrose_consumption)
+
+plot(x = sucrose_consumption$number_of_workers_at_exposure_start,
+     y = sucrose_consumption$summed_consumption,
+     xlab = "starting_worker_number",
+     ylab = "sucrose_consumption")
+```
+
+The plots above show that variance appears to slightly differ for each treatment group with control having a greater variance. Variance doesn't seem to increase with starting worker number, especially when you ignore the outlier in flup at starting worker number = 15.
+
+Fit a simple linear model with gls where consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start
+
+Plot the residuals vs fitted, residuals vs number_of_workers_at_exposure_start and residuals vs treatment. Do they agree with conclusions from the plots above? If so, try a variety of variance structures, including Varident(treatment), VarPower/Exp(number_of_workers_at_exposure_start), VarPower(number_of_workers_at_exposure_start | treatment), VarComb(Varident(treatment), VarPower/Exp(number_of_workers_at_exposure_start)) and finally VarComb(Varident(treatment), VarPower/Exp(number_of_workers_at_exposure_start | treatment)). 
+
+One point does look like an outlier, C17 (flup number_of_workers_at_exposure_start = 15). There is also reason to exclude this point as the queen died in the exposure period.
+
+At this point I am going to exclude C17. 
+```{r}
+# remove C17
+sucrose_consumption <- sucrose_consumption [sucrose_consumption$colony_number != "17", ]
+
+# fit beyond optimal model with gls
+library(nlme)
+
+# use this for the better resid vs fitted plot
+M1 <- lm(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML")
+
+# unhash this for the summary
+summary(M1)
+
+# extract residuals from this model. At this stage the ordinary residuals are fine.
+# once a variance structure has been applied we'll have to use standardised residuals
+# where the ordinary residuals are divided by the square root of the variance. 
+# NOTE - standardised residuals = normalised residuals = Pearson residuals (if Poisson GLM).
+E <- resid(M1)
+
+# plot residual vs fitted
+plot(M1, which = c (1))
+
+# plot residual vs treatment
+boxplot(E ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = sucrose_consumption$number_of_workers_at_exposure_start,
+     y = E,
+     xlab = "starting_worker_number",
+     ylab = "Ordinary Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Ordinary residuals", data = sucrose_consumption)
+
+# redefine model with gls
+M1 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML")
+```
+
+From the residual plots, the controls appear to have a greater overall variance. Determining whether variance increases with number_of_workers_at_exposure_start is harder to ascertain. For control it appears to decrease and for the other two treatments is appears to be roughly constant with one outlier in sivanto. 
+
+To help with visualising the data have a look at the output from M1
+
+```{r}
+# plot the model predictions all on one graph
+plot(sucrose_consumption$number_of_workers_at_exposure_start, sucrose_consumption$summed_consumption)
+
+# sorts colonies according to number_of_workers_at_exposure_start
+I1 <- order(sucrose_consumption$number_of_workers_at_exposure_start)
+treatment <- sucrose_consumption$treatment [I1] #Use this in remaining code
+starting_worker_number <- sort(sucrose_consumption$number_of_workers_at_exposure_start) #Use this in remaining code
+
+# splits data by treatment groups
+D1 <- data.frame(number_of_workers_at_exposure_start = starting_worker_number [treatment == "control"],
+                 treatment = "control")
+D2 <- data.frame(number_of_workers_at_exposure_start = starting_worker_number [treatment == "flup"],
+                 treatment = "flup")
+D3 <- data.frame(number_of_workers_at_exposure_start = starting_worker_number [treatment == "sivanto"],
+                 treatment = "sivanto")
+
+# generates model output based on each treatment group. 
+P1 <- predict(M1, newdata = D1)
+P2 <- predict(M1, newdata = D2)
+P3 <- predict(M1, newdata = D3)
+
+# adds lines
+lines(D1$number_of_workers_at_exposure_start, P1, lty = 1)
+lines(D2$number_of_workers_at_exposure_start, P2, lty = 2)
+lines(D3$number_of_workers_at_exposure_start, P3, lty = 3)
+
+# plot the model predictions by treatment
+plot(sucrose_consumption$number_of_workers_at_exposure_start [sucrose_consumption$treatment == "control"],
+     sucrose_consumption$summed_consumption [sucrose_consumption$treatment == "control"])
+lines(D1$number_of_workers_at_exposure_start, P1, lty = 1)
+
+plot(sucrose_consumption$number_of_workers_at_exposure_start [sucrose_consumption$treatment == "flup"],
+     sucrose_consumption$summed_consumption [sucrose_consumption$treatment == "flup"])
+lines(D2$number_of_workers_at_exposure_start, P2, lty = 2)
+
+plot(sucrose_consumption$number_of_workers_at_exposure_start [sucrose_consumption$treatment == "sivanto"],
+     sucrose_consumption$summed_consumption [sucrose_consumption$treatment == "sivanto"])
+lines(D3$number_of_workers_at_exposure_start, P3, lty = 3)
+```
+
+I think the simple linear model should be compared to VarIdent(treatment) first as this is the simplest approach. These models are nested so compare using log likelihood.
+
+```{r}
+M2 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML",
+          weights = varIdent(form= ~ 1 | treatment))
+
+summary(M2)
+
+anova(M1, M2)
+```
+
+If C7 is removed anova(M1, M2) = 0.0511, which is still non-significant. This demonstrates that C7 is having an effect on my results. anova(M1, M2) = 0.2168 to 0.0511. Removing C7 also increases the significance of the the sivanto-treatment and number_of_workers_at_exposure_start:sivanto-treatment contrasts.
+
+Likelihood test shows that varIdent(treatment) is not an improvement (with or without C7). As the variance appears to decrease with number_of_workers_at_exposure_start we can try varExp, which allows for decreases in residual spread. Run this with and without C7.
+
+var(εi j ) = σ2 × e^(2δ×DMLi)
+
+setting δ to 0 yields σ2 so nested with M1. 
+
+```{r}
+M3 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML",
+          weights = varExp(form =~ number_of_workers_at_exposure_start))
+
+summary(M3)
+
+anova(M1, M3)
+```
+
+δ is negative (if C7 is omitted), allowing for a reduction in residual spread, but the likelihood ratio test does not support this variance structure. 
+
+Another available option is vapExp(number_of_workers_at_exposure_start | treatment) as the coplot called at the start of the chunk seems to support this approach (control - decrease in spread, flup - no decrease in spread, sivanto - no decrease in spread). 
+
+This is also nested with M1 so likelihood ratio test. 
+
+```{r}
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Ordinary residuals", data = sucrose_consumption)
+
+M4 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML",
+          weights = varExp(form =~ number_of_workers_at_exposure_start | treatment))
+
+summary(M4)
+
+anova(M1, M4)
+```
+
+Both with and without C7 none of the above variance structures are significant improvements. Unfortunately this means I still have the below patterns in the residuals. It looks like there is greater overall variance for the controls and variance decreases as number_of_workers_at_exposure_start increases for the control group. Maybe I am being too sensitive with the pattern of decreasing variance with increasing number_of_workers_at_exposure_start. What I am really struggling with is the clear difference in variance between the controls and the other two treatment groups. 
+
+```{r}
+# plot residual vs fitted
+plot(M1, which = c (1))
+
+# plot residual vs treatment
+boxplot(E ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = sucrose_consumption$number_of_workers_at_exposure_start,
+     y = E,
+     xlab = "starting_worker_number",
+     ylab = "Ordinary Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Ordinary residuals", data = sucrose_consumption)
+
+
+# colour points by treatment group
+plot(M1,which = c(1), col = sucrose_consumption$treatment,
+add.smooth = FALSE, caption = "")
+
+plot(x = sucrose_consumption$number_of_workers_at_exposure_start,
+     y = E,
+     xlab = "starting_worker_number",
+     ylab = "Ordinary Residuals",
+     col = sucrose_consumption$treatment)
+```
+
+Take model 2 where varIdent treatment is applied, extract the standardised residuals and examine them graphically. 
+
+```{r}
+E2 <- resid(M2, type = "normalized")
+
+# plot residual vs treatment
+boxplot(E2 ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = sucrose_consumption$number_of_workers_at_exposure_start,
+     y = E2,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E2 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = sucrose_consumption)
+
+```
+
+Same for model 3
+
+```{r}
+E3 <- resid(M3, type = "normalized")
+
+# plot residual vs treatment
+boxplot(E3 ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = sucrose_consumption$number_of_workers_at_exposure_start,
+     y = E3,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E3 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = sucrose_consumption)
+```
+
+Model 4
+
+```{r}
+E4 <- resid(M4, type = "normalized")
+
+# plot residual vs treatment
+boxplot(E4 ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = sucrose_consumption$number_of_workers_at_exposure_start,
+     y = E4,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E4 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = sucrose_consumption)
+```
+
+The final approach would be a varComb with varIdent(treatment) and varExp(number_of_workers_at_exposure_start) or varExp(number_of_workers_at_exposure_start | treatment). Try them both to rule them out. 
+
+```{r}
+M5 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML",
+          weights = varComb(varIdent(form =~ 1 | treatment), varExp(form =~ number_of_workers_at_exposure_start)))
+          
+summary(M5)
+
+AIC(M1, M5)
+```
+
+Now for M6
+
+```{r}
+M6 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML",
+          weights = varComb(varIdent(form =~ 1 | treatment), varExp(form =~ number_of_workers_at_exposure_start | treatment)))
+          
+summary(M6)
+
+AIC(M1, M6)
+```
+
+Have a look at the graphical output for 5 and 6 
+
+```{r}
+E5 <- resid(M5, type = "normalized")
+
+# plot residual vs treatment
+boxplot(E5 ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = sucrose_consumption$number_of_workers_at_exposure_start,
+     y = E5,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E5 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = sucrose_consumption)
+```
+
+graphical output M6
+
+```{r}
+E6 <- resid(M6, type = "normalized")
+
+# plot residual vs fitted
+plot(M6, which = c (1))
+
+# plot residual vs treatment
+boxplot(E6 ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = sucrose_consumption$number_of_workers_at_exposure_start,
+     y = E6,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E6 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = sucrose_consumption)
+```
+
+```{r}
+AIC(M1, M2, M3, M4, M5, M6)
+```
+
+M1 is still the best model. M2, M5 and M6 improve standardized residual plots when grouping by treatment.
+
+See whether a random intercept is required for block/triad?
+
+```{r}
+# standardised residuals for M1 vs triad
+E_standard <- resid(M1, type = "normalized")
+
+boxplot(E_standard ~ triad, data = sucrose_consumption, axes = TRUE,
+        cex.axis=0.75,
+        ylab = 'Standardized residuals')
+abline(0,0)
+```
+
+This indicates triad should be included as a random intercept. 
+
+```{r}
+M7 <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+              data = sucrose_consumption,
+              random =~ 1 | block/triad, method = "REML")
+
+summary(M7)
+
+anova(M1, M7)
+```
+
+intraclass correlation for triad = StdDev Intercept^2 / (StdDev Intercept^2 + StdDev Residual^2), which is 7093^2 / ( 7093^2 + 20329^2) = 0.109. Therefore, intraclass correlation is low, which is good news for our effective sample size. Also, pretty sure this shows why the random intercept is not significant.
+
+Below shows the small effect on the standardized residuals of including block/triad as a random intercept.
+
+```{r}
+par(mfrow=c(1,2)) 
+
+# standardized residuals for M7 vs triad
+E7 <- resid(M7, type = "normalized")
+
+boxplot(E7 ~ triad, data = sucrose_consumption, axes = TRUE,
+        cex.axis=0.75)
+abline(0,0)
+
+# standardized residuals for M1 vs triad
+boxplot(E_standard ~ triad, data = sucrose_consumption, axes = TRUE,
+        cex.axis=0.75)
+abline(0,0)
+```
+
+The conclusion then from attempting to define the random component of my model is neither a random intercept of batch/triad or any variance structure are a significant improvement on the original linear model. After determining the optimal fixed structure if there are odd things happening in the graphical validation plots I may revisit this. 
+
+Going into determining the optimal fixed structure my optimal model is this:
+
+M1 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML")
+
+Going to do this using likelihood ratio tests of nested models.
+
+```{r}
+M1 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "ML")
+
+# test significance of interaction term
+M1a <- update(M1, .~. -treatment:number_of_workers_at_exposure_start)
+anova(M1, M1a)
+
+# not significant so drop
+# M1a now our starting model for the next step
+M1aa <- update(M1a, .~. -treatment)
+anova(M1a, M1aa)
+
+M1ab <- update(M1a, .~. -number_of_workers_at_exposure_start)
+anova(M1a, M1ab)
+
+# treatment not significant so drop it
+# M1aa now our starting model. 
+M1aaa <- update(M1aa, .~. -number_of_workers_at_exposure_start)
+anova(M1aa, M1aaa)
+
+# M1aa is our final model 
+M_final <- gls(summed_consumption ~ number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML")
+
+summary(M_final)
+```
+
+Perform some graphical validation on M_final
+
+```{r}
+M_final <- gls(summed_consumption ~ number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML")
+
+plot(M_final)
+
+qqnorm(M_final)
+
+E_final <- resid(M_final, type = "normalized")
+
+plot(E_final ~ number_of_workers_at_exposure_start,
+     data = sucrose_consumption,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+abline(0, 0)
+
+# plot residual vs treatment
+boxplot(E_final ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E6 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = sucrose_consumption)
+
+summary(M_final)
+```
+
+There are only 3 points outside of +-1.4 standardized residuals and all along the fitted values this range is represented (pretty much). QQplot is good as well. The one issue is the variance for treatment is larger than the other two treatment groups. To remedy this, add a varIdent structure and look at the residual plots again. 
+
+```{r}
+M_final <- gls(summed_consumption ~ number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML", weights = varIdent(form= ~ 1 | treatment))
+
+plot(M_final)
+
+qqnorm(M_final)
+
+E_final <- resid(M_final, type = "normalized")
+
+plot(E_final ~ number_of_workers_at_exposure_start,
+     data = sucrose_consumption,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+abline(0, 0)
+
+# plot residual vs treatment
+boxplot(E_final ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E6 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = sucrose_consumption)
+
+summary(M_final)
+```
+
+A slight improvement in the plot and the AIC is lower.
+
+What about an equivalent variance structure to that defined in M6 above. The residual plot for treatment was probably the best for this model before.
+
+```{r}
+M_final <- gls(summed_consumption ~ number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML",
+          weights = varComb(varIdent(form =~ 1 | treatment), varExp(form =~ number_of_workers_at_exposure_start | treatment)))
+
+plot(M_final)
+
+qqnorm(M_final)
+
+E_final <- resid(M_final, type = "normalized")
+
+plot(E_final ~ number_of_workers_at_exposure_start,
+     data = sucrose_consumption,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+abline(0, 0)
+
+# plot residual vs treatment
+boxplot(E_final ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E_final ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = sucrose_consumption)
+
+summary(M_final)
+```
+
+This option has a higher AIC and no serious improvement in the by treatment residual plot. I conclude that the treatment variance structure does help with heterogeneity so include it. 
+
+```{r}
+M_final <- gls(summed_consumption ~ number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML", weights = varIdent(form= ~ 1 | treatment))
+
+intervals(M_final)
+```
+
+Let's visualise this with some CIs. 
+
+```{r}
+# define in lm to get CIs from predict
+M_final <- lm(summed_consumption ~ number_of_workers_at_exposure_start,
+           data = sucrose_consumption, method = "REML")
+
+# predict
+M_final_predict <- predict(M_final)
+
+# plot with line
+plot(sucrose_consumption$number_of_workers_at_exposure_start, sucrose_consumption$summed_consumption,
+     xlab = "Starting Worker Number",
+     ylab = "Total 50% Sucrose Solution Consumption (mg)",
+     col = sucrose_consumption$treatment)
+
+lines(sucrose_consumption$number_of_workers_at_exposure_start, M_final_predict, lty = 1)
+
+# get predicted y values using regression equation
+newx <- seq(min(sucrose_consumption$number_of_workers_at_exposure_start), max(sucrose_consumption$number_of_workers_at_exposure_start), length.out=100)
+preds <- predict(M_final, newdata = data.frame(number_of_workers_at_exposure_start=newx), interval = 'confidence')
+
+# add dashed lines for confidence bands
+lines(newx, preds[ ,3], lty = 'dashed', col = 'black')
+lines(newx, preds[ ,2], lty = 'dashed', col = 'black')
+
+# the above works but now we have added a variance structure it is not correct. How to do this with a gls model object?
+summary(M_final)
+```
+
+Perform the above for the gls model. 
+
+At this point I got sidetracked reading about how the confidence is actually calculated for simple linear regression and found these very useful links, which provide the equation(s) used. 
+
+[stat exchange] (https://stats.stackexchange.com/questions/101318/understanding-shape-and-calculation-of-confidence-bands-in-linear-regression)
+
+[Leininger Powerpoint] (chrome-extension://efaidnbmnnnibpcajpcglclefindmkaj/http://www2.stat.duke.edu/~tjl13/s101/slides/unit6lec3H.pdf)
+
+This may come in handy for bootstrapping 
+
+[Non Linear Bootstrapping] (https://cran.r-project.org/web/packages/nlraa/vignettes/Bootstrapping.html)
+
+```{r}
+M_final <- gls(summed_consumption ~ number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML", weights = varIdent(form= ~ 1 | treatment))
+
+# predict
+M_final_predict <- predict(M_final)
+
+newx <- seq(min(sucrose_consumption$number_of_workers_at_exposure_start), max(sucrose_consumption$number_of_workers_at_exposure_start), length.out=100)
+preds <- predict(M_final, newdata = data.frame(number_of_workers_at_exposure_start=newx))
+
+library(tidyverse)
+
+# using the equation for calculating the CI at point x, output confidence band values
+ci_lower <- c()
+
+ci_upper <- c()
+
+for (i in 1:length(newx)) {
+  
+  # eqn
+   ci <- 1.96 * summary(M_final)$sigma * ((1/nrow(sucrose_consumption)) + (newx [i]-mean(sucrose_consumption$number_of_workers_at_exposure_start))^2 / ((nrow(sucrose_consumption)-1) * sd(sucrose_consumption$number_of_workers_at_exposure_start)^2))^0.5
+   
+   ci_u <-preds [i] + ci
+  
+   ci_l <-preds [i] - ci
+   
+   ci_lower [i] <- ci_l
+   
+   ci_upper [i] <- ci_u
+}
+
+# plot with line
+plot(sucrose_consumption$number_of_workers_at_exposure_start, sucrose_consumption$summed_consumption,
+     xlab = "Starting Worker Number",
+     ylab = "Total 50% Sucrose Solution Consumption (mg)",
+     col = sucrose_consumption$treatment)
+
+lines(sucrose_consumption$number_of_workers_at_exposure_start, M_final_predict, lty = 1)
+
+# add dashed lines for confidence bands
+lines(newx, ci_lower, lty = 'dashed', col = 'black')
+lines(newx, ci_upper, lty = 'dashed', col = 'black')
+```
+
+So the interpretation is the larger the colony was to begin with, the greater the sucrose consumption (obviously). The more important conclusion is treatment had no significant effect on sucrose consumption. 
+
+I wonder if this is also the case if we exclude C7? If the conclusions change on omitting this point it highlights its influence. 
+
+If you re-run the relevant sections above without C7 during the determining the random component of the model, allowing the variance to alter according to treatment group really improves the graphical validation plots (the boxplot). Highlight this below. 
+
+```{r}
+# what if I remove C7 as it also appears to be a large outlier, even though I have no scientific grounds for removing it
+sucrose_consumption <- sucrose_consumption [sucrose_consumption$colony_number != "7", ]
+
+# recall M1
+M1 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML")
+
+E1 <- resid(M1, type = "response")
+
+# plot residual vs treatment
+boxplot(E1 ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = sucrose_consumption$number_of_workers_at_exposure_start,
+     y = E1,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E1 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = sucrose_consumption)
+```
+
+```{r}
+# allow variance to change with treatment group
+M2 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML",
+          weights = varIdent(form= ~ 1 | treatment))
+
+E2 <- resid(M2, type = "normalized")
+
+# plot residual vs treatment
+boxplot(E2 ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = sucrose_consumption$number_of_workers_at_exposure_start,
+     y = E2,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E2 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = sucrose_consumption)
+
+anova(M1, M2)
+```
+
+The varIdent treatment is not significant (0.0511) but the boxplots by treatment look so much better. The AIC is also lower. 
+
+Using M2 see what happens when you try and add triad as a random effect.
+
+```{r}
+M3 <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML",
+          weights = varIdent(form= ~ 1 | treatment), 
+          random =~ 1 | block/triad)
+
+anova(M2, M3)
+```
+
+Enter the fixed effects model selection step with M2 as model.
+
+```{r}
+M2 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "ML",
+          weights = varIdent(form= ~ 1 | treatment))
+
+summary(M2)
+
+# test significance of interaction term
+M2a <- update(M2, .~. -treatment:number_of_workers_at_exposure_start)
+anova(M2, M2a)
+
+# the interaction term is weakly significant so M2 could be our final model. 
+# in the Zuur book p values in this range during multiple hypothesis testing steps like this 
+# are discounted. This is an odd theoretical question - As this was the first step I didn't
+# perform multiple hypothesis tests, even though I intended to. Do I therefore treat this p value
+# like I would if I came across it in the 5th step of model selection (and discard it) or retain it?
+
+# for argument's sake discard
+M2aa <- update(M2a, .~. -number_of_workers_at_exposure_start)
+anova(M2a, M2aa)
+
+M2ab <- update(M2a, .~. -treatment)
+anova(M2a, M2ab)
+
+# retain number_of_workers_at_exposure_start, this becomes starting point
+M2aba <- update(M2ab, .~. -number_of_workers_at_exposure_start)
+anova(M2ab, M2aba)
+
+# M2ab the final model. Redefine with REML
+M_final_no_c7 <- gls(summed_consumption ~ number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML",
+          weights = varIdent(form= ~ 1 | treatment))
+
+summary(M_final_no_c7)
+
+```
+
+```{r}
+# take a look at the plots
+plot(M_final_no_c7)
+
+qqnorm(M_final_no_c7)
+
+E_M_final_no_c7 <- resid(M_final_no_c7, type = "normalized")
+
+plot(E_M_final_no_c7 ~ number_of_workers_at_exposure_start, data = sucrose_consumption)
+
+boxplot(E_M_final_no_c7  ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+```
+
+So both datasets reach the same conclusion that treatment has no effect on consumption, as long as I discard the weekly significant interaction term, which is a judgement call. 
+
+Combine this with the fact that I had no biological reason to exclude C7 and the conclusion that treatment has no effect on sucrose consumption is compelling.

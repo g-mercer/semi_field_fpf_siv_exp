@@ -1,0 +1,820 @@
+---
+title: "Data Transformation and Cleaning"
+author: "Guy Mercer"
+date: "13/07/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+```{r}
+queen_rearing <- read.csv("./input/queen_rearing.csv")
+
+# import another csv with triad, batch etc. information
+batch_info_csv <- read.csv("./input/gps_coordinates.csv")
+```
+
+From this csv I need to calculate the number of days from capture to
+
+a)  egg laying
+
+b)  
+
+    > = 6 workers
+
+c)  exposure start
+
+Why? If a queen took a long time to lay eggs and/or form a colony, this could be indicative in some way of lower fitness. Naturally predisposed to producing smaller colonies. Worth checking in any case.
+
+```{r}
+library(tidyverse)
+
+# df combining function
+col_name_df_combiner_function <- function(dataframe_1, dataframe_2) {
+        
+    combined_df1 <- tibble()
+      
+    for (i in 1:nrow(dataframe_1)) {
+          
+      for (j in 1:nrow(dataframe_2)) {
+              
+        if (dataframe_1 [i, 1] == dataframe_2 [j , 1]) {
+                
+          rows_combined <- cbind(dataframe_1 [i, ], dataframe_2 [j, ])
+                    
+          combined_df1 <- rbind(combined_df1, rows_combined)
+                
+        }
+              
+      }
+            
+    }
+        
+    combined_df1 <- combined_df1 [, unique(colnames(combined_df1))]
+    
+    return(combined_df1)
+        
+  }
+# explanatory_variables function
+explanatory_variables_function <- function(queen_rearing, batch_info_csv) {
+  
+  # only retain 60 colonies that made it to exposure start. 
+  treatments <- c("control", "sivanto", "flup")
+  
+  treatment_assigned_only <- tibble()
+  
+  for (i in 1:length(treatments)) {
+    
+    treatment_group_filter <- queen_rearing [grep(treatments [i], queen_rearing$treatment_assigned), ]
+    
+    treatment_assigned_only <- rbind(treatment_assigned_only, treatment_group_filter)
+    
+  }
+  
+  # sort out date format so it can be interpreted by R.
+  # date_caught <- as.Date(treatment_assigned_only$date_caught, format = "%d.%m.%y")
+  
+  # remove_date_of_queen_death_column
+  treatment_assigned_only <- treatment_assigned_only [, -grep("queen_death", colnames(treatment_assigned_only))]
+  
+  # columns in date format
+  date_columns <- grep("date", colnames(treatment_assigned_only))
+  
+  # other useful columns. Retain and put at front of new dataframe.
+  formatted_date_categories <- tibble(treatment_assigned_only [, c(grep("colony_number", colnames(treatment_assigned_only)), 
+                                                                   grep("rearing_location", colnames(treatment_assigned_only)),
+                                                                   grep("number_of_workers_at_exposure_start", colnames(treatment_assigned_only)),
+                                                                   grep("treatment_assigned", colnames(treatment_assigned_only))
+                                                                   )])
+  
+  # extract columns in date format, convert to date and add to new dataframe with appropriate col name. 
+  for (i in 1:length(date_columns)) {
+    
+    indiv_date_cats <- as.Date(treatment_assigned_only [, date_columns [i]], format = "%d.%m.%y")
+    
+    formatted_date_categories <- cbind(formatted_date_categories, indiv_date_cats)
+    
+    colnames(formatted_date_categories) [i+4] <- colnames(treatment_assigned_only [date_columns [i]])
+  
+  }
+  
+  # remove date columns of either no use in later analysis (date of second screen pass and date of colony box move)
+  # or measures that were compromised by time pressure (date of first worker).
+  # I could have used the col indexes directly but this way there is no error for mistyping. 
+  unwanted_cols <- c("date_of_second_screen", "date_of_first_worker", "date_of_colony_box_move")
+  
+  for (i in 1:length(unwanted_cols)) {
+    
+    formatted_date_categories <- formatted_date_categories [, -grep(unwanted_cols [i], colnames(formatted_date_categories))]
+    
+  }
+  
+  # work out time_to_egg_laying, time_to_>=_6_workers, time_to_exposure_start
+  date_calc <- colnames(formatted_date_categories) [grep("date", colnames(formatted_date_categories))]
+  
+  new_col_names <- c("time_to_egg_laying", "time_to_6_workers", "time_to_exposure_start")
+  
+  for (i in 2:length(date_calc)) {
+    
+    length_of_days <- formatted_date_categories [grep(date_calc [i], colnames(formatted_date_categories))] - formatted_date_categories [grep(date_calc [1], colnames(formatted_date_categories))]
+    
+    colnames(length_of_days) <- new_col_names [i-1]
+      
+    formatted_date_categories <- cbind(formatted_date_categories, length_of_days)
+  
+  }
+  
+  # change the time_diff class to numeric for newly generated explanatory variables.
+  formatted_date_categories$time_to_egg_laying <- as.numeric(formatted_date_categories$time_to_egg_laying)
+  formatted_date_categories$time_to_6_workers <- as.numeric(formatted_date_categories$time_to_6_workers)
+  formatted_date_categories$time_to_exposure_start <- as.numeric(formatted_date_categories$time_to_exposure_start)
+  
+  # save date caught separately
+  date_caught <- cbind(colony_number = formatted_date_categories$colony_number, date_caught = formatted_date_categories$date_caught)
+  
+  # remove date columns
+  formatted_date_categories <- formatted_date_categories [ , -grep("date", colnames(formatted_date_categories))]
+  
+  # add other important information to the dataframe like triad, batch etc. 
+  
+  # removes rows that contain only NAs and blank cells.
+  # is.na(batch_info_csv) | batch_info_csv == "" this creates a logical matrix of whether a cell contains NA or is blank
+  # !apply(is.na(batch_info_csv) | batch_info_csv == "", 1, all) searches aforementioned logical matrix by row and ascertains where all of the values are true. If they are all true (all NAs or blanks, a FALSE is returned due to the !)
+  # batch_info_csv[!apply(is.na(batch_info_csv) | batch_info_csv == "", 1, all),] This logical vector is then applied to the rows of batch_info_csv
+  
+  batch_info_csv <- batch_info_csv[!apply(is.na(batch_info_csv) | batch_info_csv == "", 1, all),]
+  
+  # remove blank/NA colums
+  batch_info_csv <- batch_info_csv [, !apply(is.na(batch_info_csv), 2, all)]
+  
+  # remove lat and long
+  batch_info_csv <- batch_info_csv [, -grep(pattern = "\\w*tude", x = colnames(batch_info_csv))]
+  
+  # combine the two dfs using colony number.  
+  
+  combined_df <- col_name_df_combiner_function(dataframe_1 = batch_info_csv, dataframe_2 = formatted_date_categories)
+  
+  # make variable naming clearer
+  colnames(combined_df) <- sub("^location$", "campus_location", colnames(combined_df))
+  
+  # create a queen capture date variable. Do not think of it as time. For example, with reproductive output, if two data points are separated by two queen capture days this does not mean that the reproductive output datapoints are separated by two days in time. Therefore, it is not a time series. Treat as a regular numerical, continuous explanatory variable
+  queen_capture_day <- cbind(date_caught [, grep("colony_number", colnames(date_caught))], rep(0, 60))
+  
+  for (i in 1:nrow(date_caught)) {
+    
+     capture_day <- date_caught [i, grep("date_caught", colnames(date_caught))] - min(date_caught [, grep("date_caught", colnames(date_caught))]) + 1
+     
+     queen_capture_day [i, 2] <- as.numeric(capture_day)
+  
+  }
+  
+  colnames(queen_capture_day) <- c("colony_number", "queen_capture_day")
+  
+  queen_capture_day <- as.data.frame(queen_capture_day)
+  
+  final_output <- col_name_df_combiner_function(dataframe_1 = combined_df, dataframe_2 = queen_capture_day)
+  
+  return(final_output)
+
+}
+
+explanatory_variables <- explanatory_variables_function(queen_rearing = queen_rearing, batch_info_csv = batch_info_csv)
+```
+
+The next task is to create the col_survival_days and queen_survival_days variables from the weekly_census_data sheet.
+
+```{r}
+# import
+weekly_census_data <- read.csv("./input/weekly_census_data_2022_07_22.csv")
+
+# remove rows only containing blank cells and n/a
+weekly_census_data <- weekly_census_data[!apply(is.na(weekly_census_data) | weekly_census_data == "", 1, all),]
+
+# remove blank/NA columns
+weekly_census_data <- weekly_census_data [, !apply(is.na(weekly_census_data), 2, all)]
+
+survival_variable_function <- function(survival_column_name) {
+  
+  # keep only weeks where colonies were dead
+  # eval(parse(paste0())) allows the calling of variables named after the string defined by paste0
+  colony_n <- weekly_census_data [eval(parse(text = paste0("weekly_census_data$", survival_column_name, "_alive", sep=""))) == "N", ]
+  
+  # using unique colony numbers, filter rows matching to said col number, find the smallest experimental_day value for these rows and save both
+  # col_number and experimental_day.
+  survival_days_df <- tibble()
+  
+    for (i in 1:length(unique(colony_n$colony_number))) {
+      
+      individual_colony <- colony_n [unique(colony_n$colony_number) [i] == colony_n$colony_number, ] 
+    
+      survival <- min(individual_colony$experiment_census_day)
+    
+      survival_days_df [i, 1] <- unique(colony_n$colony_number) [i]
+      
+      survival_days_df [i, 2] <- survival
+    
+    }
+  
+  colnames(survival_days_df) <- c("colony_number", paste0(survival_column_name,"_survival_days", sep=""))
+  
+  combined_df1 <- col_name_df_combiner_function(dataframe_1 = explanatory_variables, dataframe_2 = survival_days_df)
+  
+  combined_df1 <- combined_df1 [, -grep("treatment_assigned", colnames(combined_df1))]
+
+  return(combined_df1)
+  
+}
+
+queen_survival_days_df <- survival_variable_function(survival_column_name = "queen")
+
+colony_survival_days_df <- survival_variable_function(survival_column_name = "colony")
+```
+
+Next create the worker_number and nectar_pot_number sheets with all the relevant variables
+
+```{r}
+worker_number_nectar_pot_function <- function(variable_name) {
+  
+  # keep only the required columns from weekly_census_data
+  relevant_variables_weeky_census_data <- c("colony_number", "block", "treatment", "triad", "experiment_census_day", "wax_moth",
+                                            paste0(variable_name, "_number", sep=""))
+  
+  filtered_weekly_census_data <- weekly_census_data [, relevant_variables_weeky_census_data]
+  
+  # do the same for explanatory_variables
+  relevant_variables_explanatory_variables <- c("colony_number", "campus_location", "rearing_location", "number_of_workers_at_exposure_start",
+                                                "time_to_egg_laying", "time_to_6_workers", "time_to_exposure_start", "queen_capture_day")
+  
+  filtered_explanatory_variables <- explanatory_variables [, relevant_variables_explanatory_variables]
+  
+  # combine the two
+  combined_df1 <- col_name_df_combiner_function(dataframe_1 = filtered_weekly_census_data, dataframe_2 = filtered_explanatory_variables)
+  
+  return(combined_df1)
+  
+}
+
+worker_number_df <- worker_number_nectar_pot_function(variable_name = "worker")
+
+nectar_pot_number_df <- worker_number_nectar_pot_function(variable_name = "nectar_pot")
+```
+
+Next create a male number spreadsheet, followed by one that incorporates gynes by applying a weighting of 2 to them.
+
+```{r}
+
+total_male_number_function <- function(weekly_census_data) {
+  
+  total_male_num_df <- tibble()
+
+  for (i in 1:length(unique(weekly_census_data$colony_number))) {
+    
+    by_colony <- weekly_census_data [weekly_census_data$colony_number == unique(weekly_census_data$colony_number) [i], ]
+    
+    total_male_num <- sum(as.numeric(as.character(by_colony$male_number)))
+    
+    total_male_num_df [i, 1] <- unique(weekly_census_data$colony_number) [i]
+    
+    total_male_num_df [i, 2] <- total_male_num
+    
+  }
+  
+  colnames(total_male_num_df) <- c("colony_number", "total_male_number")
+  
+  # combine the explanatory variables
+  combined_df1 <- col_name_df_combiner_function(dataframe_1 = total_male_num_df, dataframe_2 = explanatory_variables)
+  
+  combined_df1 <- combined_df1 [, -grep("treatment_assigned", colnames(combined_df1))]
+  
+  return(combined_df1)
+  
+}
+
+total_male_number <- total_male_number_function(weekly_census_data = weekly_census_data)
+```
+
+Add a total_reproductive_output (male_number + (gyne_number \* 2)) column to the total_male_number spreadsheet.
+
+```{r}
+reproductive_output_function <- function(weekly_census_data, total_male_number) {
+  
+  gyne_corr_num_df <- tibble()
+
+  for (i in 1:length(unique(weekly_census_data$colony_number))) {
+      
+    by_colony <- weekly_census_data [weekly_census_data$colony_number == unique(weekly_census_data$colony_number) [i], ]
+      
+    total_gyne_num <- sum(as.numeric(as.character(by_colony$gyne_number)))
+    
+    total_male_num <- sum(as.numeric(as.character(by_colony$male_number)))
+      
+    gyne_corr_num <- total_gyne_num * 2
+    
+    total_reproductive_output <- gyne_corr_num + total_male_num
+      
+    gyne_corr_num_df [i, 1] <- unique(weekly_census_data$colony_number) [i]
+      
+    gyne_corr_num_df [i, 2] <- total_reproductive_output
+      
+  }
+    
+  colnames(gyne_corr_num_df) <- c("colony_number", "total_reproductive_output")
+    
+  # add this column to total_male_number.
+  
+  reproductive_output_df <- col_name_df_combiner_function(dataframe_1 = gyne_corr_num_df, dataframe_2 = total_male_number)
+  
+  return(reproductive_output_df)
+  
+}
+
+total_reproductive_output_df <- reproductive_output_function(weekly_census_data = weekly_census_data, total_male_number = total_male_number)
+```
+
+Add a simple binary wax moth variable to total_reproductive_number, colony_survival and queen_survival.
+
+```{r}
+wax_moth_variable_function <- function(weekly_census_data, survival_df) {
+  
+  wax_moth_cols <- weekly_census_data [weekly_census_data$wax_moth == "Y", ]
+
+  wax_moth_cols <- unique(wax_moth_cols$colony_number)
+  
+  survival_df$wax_moth <- "N"
+  
+  for (i in 1:length(wax_moth_cols)) {
+    
+    for (j in 1:nrow(survival_df)) {
+      
+      if (wax_moth_cols [i] == survival_df$colony_number [j]) {
+        
+        survival_df$wax_moth [j] <- "Y" 
+        
+      }
+      
+    }
+    
+  }
+  
+  return(survival_df)
+
+}
+
+colony_survival_days_df <- wax_moth_variable_function(weekly_census_data = weekly_census_data, survival_df = colony_survival_days_df)
+
+queen_survival_days_df <- wax_moth_variable_function(weekly_census_data = weekly_census_data, survival_df = queen_survival_days_df)
+
+total_reproductive_output_df <- wax_moth_variable_function(weekly_census_data = weekly_census_data, 
+                                                           survival_df = total_reproductive_output_df)
+
+```
+
+Tackle the forage/insecticide consumption response variables. As I have only have 6 time points sum the consumption.
+
+```{r}
+# import the csv
+forage_consumption <- read.csv("./input/forage_consumption_exposure_period.csv")
+
+starting_worker_number <- explanatory_variables [, grep("colony_number|workers_at_exposure", colnames(explanatory_variables))]
+
+pollen_consumption_function <- function(forage_consumption) {
+  
+  # remove blank rows
+  forage_consumption <- forage_consumption[!apply(is.na(forage_consumption) | forage_consumption == "", 1, all),]
+  
+  days <- c("0", "1", "2", "4", "6", "8", "10")
+  
+  pollen_consumption <- tibble(matrix(0 ,nrow = 75, ncol = 1))
+  
+  # subtract day out columns from day in columns
+  for (i in 1:(length(days) -1)) {
+    
+    pollen_consumption_day <- eval(parse(text = paste0("forage_consumption$pollen_mass_in_day_", days [i], sep=""))) -
+                              eval(parse(text = paste0("forage_consumption$pollen_mass_out_day_", days [i+1], sep="")))
+  
+    pollen_consumption [, i] <- pollen_consumption_day
+  
+    colnames(pollen_consumption) [i] <- paste0("pollen_consumption_day_", days [i+1], sep="")
+    
+  }
+  
+  # associate with colony_number
+  pollen_consumption <- cbind(colony_number = forage_consumption$colony_number, block = forage_consumption$block, treatment = forage_consumption$treatment, triad = forage_consumption$triad, pollen_consumption)
+  
+  # check to see if it has worked properly. Are all the values of the evap controls small?
+  ECs <- pollen_consumption [grep("EC", pollen_consumption$colony_number), ]
+  
+  # check by manually comparing to a few random values.if TRUE it has worked
+  (forage_consumption$pollen_mass_in_day_0 [42] - forage_consumption$pollen_mass_out_day_1 [42]) == pollen_consumption [pollen_consumption$colony_number == forage_consumption$colony_number [42], colnames(pollen_consumption) == "pollen_consumption_day_1"]
+  
+  (forage_consumption$pollen_mass_in_day_0 [56] - forage_consumption$pollen_mass_out_day_1 [56]) == pollen_consumption [pollen_consumption$colony_number == forage_consumption$colony_number [56], colnames(pollen_consumption) == "pollen_consumption_day_1"]
+  
+  # now correct the values by the mean of the evaporation controls
+  corrected_consumption_df <- tibble()
+  
+  for (i in 1:length(unique(pollen_consumption$block))) {
+    # subset by block
+    by_block <-  pollen_consumption [pollen_consumption$block == unique(pollen_consumption$block) [i], ]
+    
+    # keep the evap controls
+    evap_controls <- by_block [grep("EC", by_block$colony_number), ]
+   
+    # keep only the consumption data
+    consumption_only <- evap_controls [, grep("consumption", colnames(evap_controls))]
+    
+    # take an average of the EC values
+    evap_control_means <- colMeans(consumption_only)
+    
+    # correct each column with the mean EC value
+    batch_corrected_consumption_df <- tibble(matrix(0, nrow = 12, ncol = 6))
+   
+    for (j in 1:length(evap_control_means)) {
+      
+      no_evap_controls <- by_block [-grep("EC", by_block$colony_number), ]
+   
+      corrected_consumption <- no_evap_controls [, colnames(no_evap_controls) == names(evap_control_means) [j]] - evap_control_means [j]
+      
+      batch_corrected_consumption_df [, j] <- corrected_consumption
+      
+      colnames(batch_corrected_consumption_df) [j] <- names(evap_control_means) [j]
+    }
+    
+    # re-associate with identifiers
+    batch_corrected_consumption_df <- cbind(colony_number = no_evap_controls$colony_number, block = no_evap_controls$block,
+                                      treatment = no_evap_controls$treatment, triad = no_evap_controls$triad, 
+                                      batch_corrected_consumption_df)
+    
+    corrected_consumption_df <- rbind(corrected_consumption_df, batch_corrected_consumption_df)
+    
+  }
+  
+  # check to see if it has worked properly manually.
+  evap_correction_checker <- function(col_num) {
+    
+    block_evap_controls <- pollen_consumption [pollen_consumption$block == pollen_consumption [pollen_consumption$colony_number == col_num, ]$block, ] [grep("EC", pollen_consumption [pollen_consumption$block == pollen_consumption [pollen_consumption$colony_number == col_num, ]$block, ] $colony_number), ]
+    
+    pollen_consumption [pollen_consumption$colony_number == col_num, ] [, names(colMeans(block_evap_controls [, grep("consumption", colnames(block_evap_controls))])) [1]] - colMeans(block_evap_controls [, grep("consumption", colnames(block_evap_controls))]) [1] ==
+      corrected_consumption_df [corrected_consumption_df$colony_number == col_num, colnames(corrected_consumption_df) == names(colMeans(block_evap_controls [, grep("consumption", colnames(block_evap_controls))])) [1]]
+    
+  }
+  
+  # will return true or false
+  evap_correction_checker(col_num = "176")
+  
+  # set negative values to 0
+  for (i in 1:ncol(corrected_consumption_df [, grep("consumption", colnames(corrected_consumption_df))])) {
+    
+    consumption_column <- corrected_consumption_df [, grep("consumption", colnames(corrected_consumption_df))] [i]
+    
+    for (j in 1:nrow(consumption_column)) {
+      
+      if (consumption_column [j, ] < 0 ) {
+        
+        consumption_column [j, ] <- 0
+        
+      }
+      
+    }
+    
+    corrected_consumption_df [, colnames(corrected_consumption_df) == names(consumption_column)] <- consumption_column
+    
+  }
+  
+  # sum for total pollen consumption over exposure_window
+  summed_consumption <- as.data.frame(apply(corrected_consumption_df [,grep("consumption", colnames(corrected_consumption_df))], 1, sum))
+  
+  names(summed_consumption) <- "summed_consumption"
+  
+  corrected_consumption_df <- cbind(corrected_consumption_df, summed_consumption)
+  
+    # add starting_worker_number
+  corrected_consumption_df1 <- col_name_df_combiner_function(dataframe_1 = corrected_consumption_df, 
+                                                             dataframe_2 = starting_worker_number)
+  
+  return(corrected_consumption_df1)
+  
+}
+
+pollen_consumption_df <- pollen_consumption_function(forage_consumption = forage_consumption)
+```
+
+Do the same for sucrose. There were 4 spills for sucrose so make sure to exclude these at the end.
+
+```{r}
+# import the csv
+forage_consumption <- read.csv("./input/forage_consumption_exposure_period.csv")
+
+starting_worker_number <- explanatory_variables [, grep("colony_number|workers_at_exposure", colnames(explanatory_variables))]
+
+sucrose_consumption_function <- function(forage_consumption, starting_worker_number) {
+  
+  # remove blank rows
+  forage_consumption <- forage_consumption[!apply(is.na(forage_consumption) | forage_consumption == "", 1, all),]
+  
+  days <- c("0", "1", "2", "4", "6", "8", "10")
+  
+  sucrose_consumption <- tibble(matrix(0 ,nrow = 75, ncol = 1))
+  
+  # subtract day out columns from day in columns
+  for (i in 1:(length(days) -1)) {
+    
+    sucrose_consumption_day <- eval(parse(text = paste0("forage_consumption$sucrose_mass_in_day_", days [i], sep=""))) +
+                              eval(parse(text = paste0("forage_consumption$feeder_mass_day_", days [i], sep=""))) -
+                              eval(parse(text = paste0("forage_consumption$sucrose_mass_out_day_", days [i+1], sep="")))
+  
+    sucrose_consumption [, i] <- sucrose_consumption_day
+  
+    colnames(sucrose_consumption) [i] <- paste0("sucrose_consumption_day_", days [i+1], sep="")
+    
+  }
+  
+  # associate with colony_number
+  sucrose_consumption <- cbind(colony_number = forage_consumption$colony_number, block = forage_consumption$block, treatment = forage_consumption$treatment, triad = forage_consumption$triad, sucrose_consumption)
+  
+  # check to see if it has worked properly. Are all the values of the evap controls small?
+  # no as there was a spill in the ECs. 
+  ECs <- sucrose_consumption [grep("EC", sucrose_consumption$colony_number), ]
+  
+  # now correct the values by the mean of the evaporation controls
+  corrected_consumption_df <- tibble()
+  
+  for (i in 1:length(unique(sucrose_consumption$block))) {
+    # subset by block
+    by_block <-  sucrose_consumption [sucrose_consumption$block == unique(sucrose_consumption$block) [i], ]
+    
+    # keep the evap controls
+    evap_controls <- by_block [grep("EC", by_block$colony_number), ]
+   
+    # keep only the consumption data
+    consumption_only <- evap_controls [, grep("consumption", colnames(evap_controls))]
+    
+    # take an average of the EC values
+    evap_control_means <- colMeans(consumption_only)
+    
+    # correct each column with the mean EC value
+    batch_corrected_consumption_df <- tibble(matrix(0, nrow = 12, ncol = 6))
+   
+    for (j in 1:length(evap_control_means)) {
+      
+      no_evap_controls <- by_block [-grep("EC", by_block$colony_number), ]
+   
+      corrected_consumption <- no_evap_controls [, colnames(no_evap_controls) == names(evap_control_means) [j]] - evap_control_means [j]
+      
+      batch_corrected_consumption_df [, j] <- corrected_consumption
+      
+      colnames(batch_corrected_consumption_df) [j] <- names(evap_control_means) [j]
+    }
+    
+    # re-associate with identifiers
+    batch_corrected_consumption_df <- cbind(colony_number = no_evap_controls$colony_number, block = no_evap_controls$block,
+                                      treatment = no_evap_controls$treatment, triad = no_evap_controls$triad, 
+                                      batch_corrected_consumption_df)
+    
+    corrected_consumption_df <- rbind(corrected_consumption_df, batch_corrected_consumption_df)
+    
+  }
+  
+  # for colony_34 day_10 two feeders were used. Therefore, two evaporation control corrections should be performed
+  # to save time and lots of coding apply the additional correction manually.
+  # mean of EC1-3 for day 10 = 796. Subtract this value from colony_34 day_10.
+  corrected_consumption_df [corrected_consumption_df$colony_number == "34",
+                          colnames(corrected_consumption_df) == "sucrose_consumption_day_10"] <-
+    corrected_consumption_df [corrected_consumption_df$colony_number == "34",
+                          colnames(corrected_consumption_df) == "sucrose_consumption_day_10"] - 796
+  
+  # sum for total sucrose consumption over exposure_window
+  summed_consumption <- as.data.frame(apply(corrected_consumption_df [,grep("consumption", 
+                                                                              colnames(corrected_consumption_df))], 1, sum))
+  
+  names(summed_consumption) <- "summed_consumption"
+  
+  corrected_consumption_df <- cbind(corrected_consumption_df, summed_consumption)
+  
+  # remove the 4 colonies that had spills. 
+  sucrose_mass_out_values <- forage_consumption [, grep("sucrose_mass_out", colnames(forage_consumption))]
+  
+  sucrose_mass_out_values <- cbind(colony_number = forage_consumption [, grep("colony_number", colnames(forage_consumption))], sucrose_mass_out_values)
+  
+  zero_or_not <- sucrose_mass_out_values == 0
+  
+  any_zero_in_row <- apply(zero_or_not, 1, any)
+  
+  spill_rows <- sucrose_mass_out_values [any_zero_in_row,]
+  
+  spill_rows_col_num <- spill_rows$colony_number
+  
+  for (i in 1:length(spill_rows_col_num)) {
+    
+    corrected_consumption_df <- corrected_consumption_df [spill_rows_col_num [i] != corrected_consumption_df$colony_number, ]
+    
+  }
+  
+  # add starting_worker_number
+  corrected_consumption_df1 <- col_name_df_combiner_function(dataframe_1 = corrected_consumption_df, 
+                                                             dataframe_2 = starting_worker_number)
+  
+  return(corrected_consumption_df1)
+  
+}
+
+sucrose_consumption_df <- sucrose_consumption_function(forage_consumption = forage_consumption, starting_worker_number = starting_worker_number)
+```
+
+Create insecticide_consumption_df
+
+```{r}
+# create a wide to long function
+wide_to_long_function <- function(dataframe_1, forage_type) {
+  
+  # convert sucrose_consumption into long format
+  days <- c(1, 2, 4, 6, 8, 10)
+  
+  consumption_long <- tibble()
+  
+  for (i in 1:length(days)) {
+    
+    # retain the identifier and explan var columns plus a day sucrose consumption column 
+    consumption_by_day <- dataframe_1 [, c(grep("colony_number", colnames(dataframe_1)),
+                                                              grep("block", colnames(dataframe_1)),
+                                                              grep("treatment", colnames(dataframe_1)),
+                                                              grep("triad", colnames(dataframe_1)),
+                                                              grep("number_of_workers_at_exposure_start",
+                                                                                                       colnames(dataframe_1)),
+                                                              grep(paste0("^",forage_type,"_consumption_day_", days [i], "$", sep = ""),
+                                                                 colnames(dataframe_1)))]
+    
+    # add a column with the day
+    consumption_by_day$day <- days [i]
+    
+    # rename the sucrose_consumption column so it has the same name for rbind to work
+    names(consumption_by_day) [names(consumption_by_day) == paste0(forage_type,"_consumption_day_", 
+                                                                                   days [i], sep="")] <- paste0(forage_type, "_consumption",
+                                                                                                                sep = "")
+    
+    consumption_long <- rbind(consumption_long, consumption_by_day)
+    
+  }
+  
+  return(consumption_long)
+  
+}
+
+sucrose_consumption_long <- wide_to_long_function(dataframe_1 = sucrose_consumption_df, forage_type = "sucrose")
+
+pollen_consumption_long <- wide_to_long_function(dataframe_1 = pollen_consumption_df, forage_type = "pollen")
+
+# convert from mg to kg
+sucrose_consumption_long$sucrose_consumption <- sucrose_consumption_long$sucrose_consumption / 1000000
+pollen_consumption_long$pollen_consumption <- pollen_consumption_long$pollen_consumption / 1000000
+
+# create an insecticide_dose_function
+insecticide_dose_function <- function(dataframe_1, forage_type) {
+  
+  days <- c(1, 2, 4, 6, 8, 10)
+  # these values are in µg/kg (µg insecticide / kg feed)
+  sucrose_insecticide_concs <- c(day_1 = 866.2034, day_2 = 514.0244, day_4 = 243.537,
+                                 day_6 = 89.95134, day_8 = 33.22388, day_10 = 12.27137)
+  
+  pollen_insecticide_concs <- c(day_1 = 19187.14, day_2 = 5033.175, day_4 = 689.9583,
+                                day_6 = 689.9583, day_8 = 689.9583, day_10 = 689.9583)
+  
+  # create "empty" insecticide_consumption_column
+  dataframe_1$insecticide_consumption <- 0
+  
+  
+  # match the correct concentration using day and multiply this values (µg/kg) by the mass of forage consumed (kg).
+  # yields µg of insecticide consumed. 
+  for (i in 1:length(days)) {
+    
+    for (j in 1:nrow(dataframe_1)) {
+      
+      if (days [i] == dataframe_1$day [j]) {
+        
+        dataframe_1$insecticide_consumption [j] <- eval(parse(text = paste0("dataframe_1$", forage_type, "_consumption", sep =""))) [j] * 
+                                                                eval(parse(text = paste0(forage_type,"_insecticide_concs",
+                                                                                         sep = ""))) [i]
+        
+      }
+      
+    }
+    
+  }
+  
+  return(dataframe_1)
+}
+
+sucrose_consumption_long <- insecticide_dose_function(dataframe_1 = sucrose_consumption_long, forage_type = "sucrose")
+
+pollen_consumption_long <- insecticide_dose_function(dataframe_1 = pollen_consumption_long, forage_type = "pollen")
+```
+
+```{r}
+# create a function that returns total insecticide dose for each colony
+total_insecticide_dose_function <- function(forage_consumption, pollen_consumption_long, sucrose_consumption_long, sucrose_consumption_df) {
+  
+  # remove pollen rows where there was a spill for sucrose
+  forage_consumption <- forage_consumption[!apply(is.na(forage_consumption) | forage_consumption == "", 1, all),]
+
+  sucrose_mass_out_values <- forage_consumption [, grep("sucrose_mass_out", colnames(forage_consumption))]
+  
+  sucrose_mass_out_values <- cbind(colony_number = forage_consumption [, grep("colony_number",
+                                                                              colnames(forage_consumption))], sucrose_mass_out_values)
+  
+  zero_or_not <- sucrose_mass_out_values == 0
+  
+  any_zero_in_row <- apply(zero_or_not, 1, any)
+  
+  spill_rows <- sucrose_mass_out_values [any_zero_in_row,]
+  
+  spill_rows_col_num <- spill_rows$colony_number
+  
+  for (i in 1:length(spill_rows_col_num)) {
+    
+    pollen_consumption_long <- pollen_consumption_long [spill_rows_col_num [i] != pollen_consumption_long$colony_number, ]
+    
+  }
+
+  # add the two insecticide columns from each forage type together
+  insecticide_consumption <- cbind(data.frame(pollen_consumption_long$colony_number),
+                                   data.frame(pollen_consumption_long$block),
+                                   data.frame(pollen_consumption_long$treatment),
+                                   data.frame(pollen_consumption_long$triad),
+                                   data.frame(pollen_consumption_long$day),
+                                   data.frame(pollen_consumption_long$number_of_workers_at_exposure_start),
+                                   data.frame(pollen_consumption_long$insecticide_consumption),
+                                   data.frame(sucrose_consumption_long$insecticide_consumption),
+                                   data.frame(sucrose_consumption_long$insecticide_consumption + pollen_consumption_long$insecticide_consumption))
+  
+  colnames(insecticide_consumption) <- c("colony_number", "block", "treatment", "triad", "day", "number_of_workers_at_exposure_start",
+                                         "insecticide_consumption_pollen", "insecticide_consumption_sucrose", "insecticide_consumption_combined")
+  
+  # subset by colony, sum day insecticide consumption values to return total insecticide consumption
+  total_dose_df <- tibble()
+  
+  for (i in 1:length(unique(insecticide_consumption$colony_number))) {
+    
+    by_colony <- insecticide_consumption [insecticide_consumption$colony_number == unique(insecticide_consumption$colony_number) [i], ]
+    
+    total_dose <- cbind(data.frame(unique(insecticide_consumption$colony_number) [i]), data.frame(sum(by_colony$insecticide_consumption_combined)))
+    
+    total_dose_df <- rbind(total_dose_df, total_dose)
+    
+  }
+  
+  colnames(total_dose_df) <- c("colony_number", "total_insecticide_dose")
+  
+  # re-associate total_insecticide_dose with explanatory variables
+  total_insecticide_dose <- col_name_df_combiner_function(dataframe_1 = total_dose_df, dataframe_2 = sucrose_consumption_df)
+  
+  total_insecticide_dose <- total_insecticide_dose [, -grep("sucrose|summed", colnames(total_insecticide_dose))]
+  
+  # remove controls colonies for which the output is nonsense
+  total_insecticide_dose <- total_insecticide_dose [total_insecticide_dose$treatment != "control",]
+  
+  return(total_insecticide_dose)
+    
+}
+
+total_insecticide_dose_df <- total_insecticide_dose_function(forage_consumption = forage_consumption, 
+                                                          pollen_consumption_long = pollen_consumption_long,
+                                                          sucrose_consumption_long = sucrose_consumption_long,
+                                                          sucrose_consumption_df = sucrose_consumption_df)
+```
+
+Create male_mass_df
+
+```{r}
+
+```
+
+Write the final csvs to the output file
+
+```{r}
+# queen_survival
+write_csv(queen_survival_days_df, "output/queen_survival.csv")
+
+# colony_survival
+write_csv(colony_survival_days_df, "output/colony_survival.csv")
+
+# worker_number
+write_csv(worker_number_df, "output/worker_number.csv")
+
+# nectar_pot_number
+write_csv(nectar_pot_number_df, "output/nectar_pot_number.csv")
+
+# male_number
+write_csv(total_reproductive_output_df, "output/total_male_number.csv")
+
+# sucrose_consumption
+write_csv(sucrose_consumption_df, "output/sucrose_consumption.csv")
+
+# pollen_consumption
+write_csv(pollen_consumption_df, "output/pollen_consumption.csv")
+
+# insecticide_consumption
+write_csv(total_insecticide_dose_df, "output/total_insecticide_dose.csv")
+
+# male_mass
+```

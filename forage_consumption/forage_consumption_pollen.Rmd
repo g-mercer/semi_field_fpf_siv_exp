@@ -1,0 +1,543 @@
+---
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+Reminder: the csvs imported for analysis are linked from the output of data_transformation_cleaning, not db as usual. 
+
+```{r}
+pollen_consumption <- read.csv("./input/pollen_consumption.csv")
+```
+
+Ensure variables have correct class. 
+
+```{r}
+# make sure variable classes are correct
+pollen_consumption$block <- as.factor(pollen_consumption$block)
+class(pollen_consumption$block)
+
+pollen_consumption$treatment <- as.factor(pollen_consumption$treatment)
+class(pollen_consumption$treatment)
+
+pollen_consumption$triad <- as.factor(pollen_consumption$triad)
+class(pollen_consumption$triad)
+
+class(pollen_consumption$summed_consumption)
+
+pollen_consumption$number_of_workers_at_exposure_start <- as.numeric(pollen_consumption$number_of_workers_at_exposure_start)
+class(pollen_consumption$number_of_workers_at_exposure_start)
+```
+
+Sort out the cleveland dotplot encoding. 
+
+```{r}
+# for a cleveland dotplot to work treatment has to be coded 1-3. 
+pollen_consumption$clevelandcode <- 0 
+
+for (i in 1:nrow(pollen_consumption)) {
+  
+  if (pollen_consumption$treatment [i] == "control") {
+    
+    pollen_consumption$clevelandcode [i] <- 1
+    
+  }
+  
+  if (pollen_consumption$treatment [i] == "flup") {
+    
+    pollen_consumption$clevelandcode [i] <- 2
+    
+    }
+  
+  if (pollen_consumption$treatment [i] == "sivanto") {
+    
+    pollen_consumption$clevelandcode [i] <- 3
+    
+    }
+  
+}
+
+# should be numeric already anyway
+pollen_consumption$clevelandcode <- as.numeric(pollen_consumption$clevelandcode)
+```
+
+Use a cleveland dotplot to identify any obvious outliers. 
+
+```{r}
+dotchart(pollen_consumption$summed_consumption,
+         groups = factor(pollen_consumption$clevelandcode),
+         ylab = "Order of observations",
+         xlab = "Consumption (mg)", main = "Cleveland dotplot", pch = pollen_consumption$clevelandcode)
+```
+
+It does look like there are two potential outliers. Sivanto could be lower than the other two groups. Also, the other two groups look like they are separated into two distinct clusters? That's odd. Investigate. 
+
+Have a look at a boxplot.
+
+```{r}
+boxplot(summed_consumption ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Consumption Conditional on Treatment", 
+        ylab = "Consumption", data = pollen_consumption)
+```
+
+Again, sivanto does look lower than the other two and one of the outliers is apparent again. May be the case where I perform the analysis twice, once with and once without the outliers to see if they have any serious influence. There is no biological reason to discount these colonies like there was for C17 in the sucrose analysis. 
+
+Also want to show consumption vs number_of_workers_exposure_start for each treatment. For the plots below the panels are filled from bottom to top and left to right. So for summed_consumption vs number_of_workers_at_exposure_start the bottom left is control, bottom right is flup, top right is sivanto.
+
+```{r}
+# by treatment
+coplot(summed_consumption ~ number_of_workers_at_exposure_start | treatment, data = pollen_consumption)
+
+plot(x = pollen_consumption$number_of_workers_at_exposure_start,
+     y = pollen_consumption$summed_consumption,
+     col = pollen_consumption$treatment,
+     xlab = "starting_worker_number",
+     ylab = "pollen_consumption")
+```
+
+C17 is again an outlier when starting worker number is examined. Again I will exclude it as the queen died in the dosage window early on. 
+
+```{r}
+# remove C17
+pollen_consumption <- pollen_consumption [pollen_consumption$colony_number != "17", ]
+
+# two values 50% larger than 3rd largest value. 
+# pollen_consumption <- pollen_consumption [pollen_consumption$colony_number != "76", ]
+# pollen_consumption <- pollen_consumption [pollen_consumption$colony_number != "117", ]
+
+# fit beyond optimal model with gls
+library(nlme)
+
+M1 <- lm(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = pollen_consumption, method = "REML")
+
+# unhash this for the summary
+summary(M1)
+
+# extract residuals from this model. At this stage the ordinary residuals are fine.
+# once a variance structure has been applied we'll have to use standardised residuals
+# where the ordinary residuals are divided by the square root of the variance. 
+# NOTE - standardised residuals = normalised residuals = Pearson residuals (if Poisson GLM).
+E <- resid(M1)
+
+# plot residual vs fitted
+plot(M1, which = c (1), abline = 0)
+
+# plot residual vs treatment
+boxplot(E ~ pollen_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = pollen_consumption$number_of_workers_at_exposure_start,
+     y = E,
+     col = pollen_consumption$treatment,
+     xlab = "starting_worker_number",
+     ylab = "Ordinary Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Ordinary residuals", data = pollen_consumption)
+```
+
+Using lm a line is added to the residual vs fitted, which aids pattern detection. There is a pattern in my residuals where the residuals are negative for small and large fitted values. The simplest fix is to add a quadratic term to combat this apparent non-linearity. Other fixes are to add more explanatory variables, interaction terms, perform a transformation or apply smoothers. 
+
+```{r}
+# does a quadratic term solve the residual pattern?
+M1_quad <- lm(summed_consumption ~ treatment + number_of_workers_at_exposure_start + I(number_of_workers_at_exposure_start^2) + treatment:number_of_workers_at_exposure_start + treatment:I(number_of_workers_at_exposure_start^2),
+          data = pollen_consumption, method = "REML")
+
+# extract residuals from this model. At this stage the ordinary residuals are fine.
+# once a variance structure has been applied we'll have to use standardised residuals
+# where the ordinary residuals are divided by the square root of the variance. 
+# NOTE - standardised residuals = normalised residuals = Pearson residuals (if Poisson GLM).
+E_quad <- resid(M1_quad)
+
+# plot residual vs fitted
+plot(M1_quad, which = c (1), abline = 0)
+
+# plot residual vs treatment
+boxplot(E_quad ~ pollen_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = pollen_consumption$number_of_workers_at_exposure_start,
+     y = E_quad,
+     col = pollen_consumption$treatment,
+     xlab = "starting_worker_number",
+     ylab = "Ordinary Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E_quad ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Ordinary residuals", data = pollen_consumption)
+```
+
+The residuals vs fitted still has this pattern in it. Add triad to see if missing this out introduces this pattern!
+
+```{r}
+M2 <- lm(summed_consumption ~ treatment + number_of_workers_at_exposure_start + triad + treatment:number_of_workers_at_exposure_start,
+          data = pollen_consumption, method = "REML")
+
+# unhash this for the summary
+summary(M2)
+
+# extract residuals from this model. At this stage the ordinary residuals are fine.
+# once a variance structure has been applied we'll have to use standardised residuals
+# where the ordinary residuals are divided by the square root of the variance. 
+# NOTE - standardised residuals = normalised residuals = Pearson residuals (if Poisson GLM).
+E2 <- resid(M2)
+
+# plot residual vs fitted
+plot(M2, which = c (1), abline = 0)
+
+# plot residual vs treatment
+boxplot(E2 ~ pollen_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = pollen_consumption$number_of_workers_at_exposure_start,
+     y = E2,
+     col = pollen_consumption$treatment,
+     xlab = "starting_worker_number",
+     ylab = "Ordinary Residuals")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E2 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Ordinary residuals", data = pollen_consumption)
+```
+
+It does! Add them in as a random intercept and look at the residual plots again.
+
+```{r}
+M3 <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+              data = pollen_consumption,
+              random =~ 1 | triad, method = "REML")
+
+summary(M3)
+
+# extract residuals from this model. At this stage the ordinary residuals are fine.
+# once a variance structure has been applied we'll have to use standardised residuals
+# where the ordinary residuals are divided by the square root of the variance. 
+# NOTE - standardised residuals = normalised residuals = Pearson residuals (if Poisson GLM).
+E3 <- resid(M3, type = "response")
+
+# plot residual vs fitted
+plot(M3, which = c (1), abline = 0, )
+
+# plot residual vs treatment
+boxplot(E3 ~ pollen_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = pollen_consumption$number_of_workers_at_exposure_start,
+     y = E3,
+     col = pollen_consumption$treatment,
+     xlab = "starting_worker_number",
+     ylab = "Ordinary Residuals")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E3 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Ordinary residuals", data = pollen_consumption)
+```
+
+Compare the residual vs fitted to M1 where triad is not included, to M3 where triad is a random effect and M2 where it is a fixed effect. 
+
+```{r}
+# plot residual vs fitted
+plot(M1, which = c (1), abline = 0)
+
+# plot residual vs fitted
+plot(M3, which = c (1), abline = 0)
+
+# plot residual vs fitted
+plot(M2, which = c (1), abline = 0)
+```
+
+Adding them in as a random effect doesn't have as strong a corrective effect on the residuals. Only adding triad in as a fixed effect does this. 
+
+summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start + triad
+
+Variance seems to increase with starting worker number so try a varPower and varExp function. Both are nested with M2 as setting delta to 0 yields σ2.
+
+```{r}
+# redefine with gls
+M2 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + triad + treatment:number_of_workers_at_exposure_start,
+          data = pollen_consumption, method = "REML")
+
+summary(M2)
+
+# varExp function
+M4 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + triad + treatment:number_of_workers_at_exposure_start,
+          data = pollen_consumption, method = "REML", weights = varExp(form =~ number_of_workers_at_exposure_start))
+anova(M2, M4)
+
+# varPower function
+M5 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + triad + treatment:number_of_workers_at_exposure_start,
+          data = pollen_consumption, method = "REML", weights = varPower(form =~ number_of_workers_at_exposure_start))
+anova(M2,M5)
+
+# summary(M5)
+```
+
+Weak support for adding a variance structure that allows variance to increase with starting worker number. Include it due to the cone shaped pattern on the residuals vs fitted before its inclusion. Have a look at the residual plots for M5. 
+
+```{r}
+E5 <- resid(M5, type = "normalized")
+
+# plot residual vs fitted
+plot(M5, which = c (1), abline = 0, )
+
+# plot residual vs treatment
+boxplot(E5 ~ pollen_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = pollen_consumption$number_of_workers_at_exposure_start,
+     y = E5,
+     col = pollen_consumption$treatment,
+     xlab = "starting_worker_number",
+     ylab = "Stand. Residuals")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E5 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Stand. Residuals", data = pollen_consumption)
+```
+
+I can't see much difference in the residual vs fitted plot. Can either include the varPower structure or not. 
+
+```{r}
+M1 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = pollen_consumption, method = "REML")
+
+# standardised residuals for M1 vs triad
+E_standard <- resid(M1, type = "normalized")
+
+boxplot(E_standard ~ triad, data = pollen_consumption, axes = TRUE,
+        cex.axis=0.75,
+        ylab = 'Standardized residuals')
+abline(0,0)
+```
+
+Above plot is redundant now that triad is a fixed effect. However, it shows that observations with triad were correlated (when it was not a fixed effect). However, a likelihood test between M1 and M1 + (1|triad) was not significant and adding triad as a random intercept did not correct the patterns in the residuals. 
+
+Back to the current step. Have now got our random structure sorted:
+
+M5 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + triad + treatment:number_of_workers_at_exposure_start,
+          data = pollen_consumption, method = "REML", weights = varPower(form =~ number_of_workers_at_exposure_start))
+
+Time for model selection to find the optimal fixed structure for the selected random structure. Perform using likelihood ratio tests of nested models.
+
+```{r}
+# this is our starting model.
+M5 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + triad + treatment:number_of_workers_at_exposure_start,
+          data = pollen_consumption, method = "ML", weights = varPower(form =~ number_of_workers_at_exposure_start))
+
+# test significance of interaction term
+M5a <- update(M5, .~. -treatment:number_of_workers_at_exposure_start)
+anova(M5, M5a)
+
+# drop it. M5a ref
+M5aa <- update(M5a, .~. -treatment)
+anova(M5a, M5aa)
+
+M5ab <- update(M5a, .~. -number_of_workers_at_exposure_start)
+anova(M5a, M5ab)
+
+M5ac <- update(M5a, .~. -triad)
+anova(M5a, M5ac)
+
+# treatment is only just significant. Remove as performing multiple rounds of hypothesis testing
+# M5aa ref
+M5aaa <- update(M5aa, .~. -triad)
+anova(M5aa, M5aaa)
+
+M5aab <- update(M5aa, .~. -number_of_workers_at_exposure_start)
+anova(M5aa, M5aab)
+
+# both triad and number_of_workers_at_exposure_start are highly significant
+# final model M5aaa
+```
+
+Using M2 that doesn't include the variance structure
+
+```{r}
+# this is our starting model.
+M2 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + triad + treatment:number_of_workers_at_exposure_start,
+          data = pollen_consumption, method = "ML")
+
+# test significance of interaction term
+M2a <- update(M2, .~. -treatment:number_of_workers_at_exposure_start)
+anova(M2, M2a)
+
+# drop it. M5a ref
+M2aa <- update(M2a, .~. -treatment)
+anova(M2a, M2aa)
+
+M2ab <- update(M2a, .~. -number_of_workers_at_exposure_start)
+anova(M2a, M2ab)
+
+M2ac <- update(M2a, .~. -triad)
+anova(M2a, M2ac)
+
+# treatment is not significant. Remove as performing multiple rounds of hypothesis testing
+# M5aa ref
+M2aaa <- update(M2aa, .~. -triad)
+anova(M2aa, M2aaa)
+
+M2aab <- update(M2aa, .~. -number_of_workers_at_exposure_start)
+anova(M2aa, M2aab)
+
+# both triad and number_of_workers_at_exposure_start are highly significant
+# final model M5aaa
+```
+
+Refit the final model with REML, which could have justifiably been the output if we had included the varPower variance structure or not, which only had weak support. 
+
+```{r}
+M_final <- gls(summed_consumption ~ number_of_workers_at_exposure_start + triad,
+          data = pollen_consumption, method = "REML", weights = varPower(form =~ number_of_workers_at_exposure_start))
+
+summary(M_final)
+
+# take a look at the residual plots
+E_final <- resid(M_final, type = "normalized")
+
+# plot residual vs fitted
+plot(M_final, which = c (1), abline = 0, )
+
+# plot residual vs treatment
+boxplot(E_final ~ pollen_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = pollen_consumption$number_of_workers_at_exposure_start,
+     y = E_final,
+     col = pollen_consumption$treatment,
+     xlab = "starting_worker_number",
+     ylab = "Stand. Residuals")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E_final ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Stand. Residuals", data = pollen_consumption)
+
+# qq plot
+plot(M_final)
+
+qqnorm(M_final)
+```
+
+On the plot where residual are split by treatment group, for sivanto and control there are many negative residuals at low starting worker numbers. Treatment was weakly significant when using a weakly significant variance structure. Could include it. 
+
+```{r}
+M_final <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + triad,
+          data = pollen_consumption, method = "REML", weights = varPower(form =~ number_of_workers_at_exposure_start))
+
+summary(M_final)
+
+# take a look at the residual plots
+E_final <- resid(M_final, type = "normalized")
+
+# plot residual vs fitted
+plot(M_final, which = c (1), abline = 0, )
+
+# plot residual vs treatment
+boxplot(E_final ~ pollen_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = pollen_consumption$number_of_workers_at_exposure_start,
+     y = E_final,
+     col = pollen_consumption$treatment,
+     xlab = "starting_worker_number",
+     ylab = "Stand. Residuals")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E_final ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Stand. Residuals", data = pollen_consumption)
+
+# qq plot
+plot(M_final)
+
+qqnorm(M_final)
+```
+
+Adding treatment slightly shifts the sivanto residuals at low starting worker numbers up, but it's marginal. Also, it adds a slight cone shape to the residual vs fitted. Judgement call. Don't include.
+
+If triad is shifted over to the random part of the model the pattern in residual vs fitted plot is reintroduced. Accept triad has to be included as fixed effect.  Redefine M_final.
+
+```{r}
+M_final <- gls(summed_consumption ~ number_of_workers_at_exposure_start + triad,
+          data = pollen_consumption, method = "REML", weights = varPower(form =~ number_of_workers_at_exposure_start))
+
+summary(M_final)
+
+# take a look at the residual plots
+E_final <- resid(M_final, type = "normalized")
+
+# plot residual vs fitted
+plot(M_final, which = c (1), abline = 0, )
+
+# plot residual vs treatment
+boxplot(E_final ~ pollen_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = pollen_consumption$number_of_workers_at_exposure_start,
+     y = E_final,
+     col = pollen_consumption$treatment,
+     xlab = "starting_worker_number",
+     ylab = "Stand. Residuals")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E_final ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Stand. Residuals", data = pollen_consumption)
+
+# qq plot
+plot(M_final)
+
+qqnorm(M_final)
+```
+
+How about redoing all of this without the two big observations that 50% bigger than the 3rd largest observation? No because Standardized residuals: 
+
+Min = -2.0413790
+
+Max = 1.7502483
+
+Nothing a serious outlier anymore. 
+
+Interpretation. Treatment has no effect on pollen consumption. As starting worker number increases pollen consumption increases.  
+
+```{r}
+# create a plot to show this
+# plot the model predictions all on one graph
+plot(pollen_consumption$number_of_workers_at_exposure_start,
+     pollen_consumption$summed_consumption,
+     type="n",
+     xlab = "Starting Worker Number",
+     ylab = " Consumption")
+
+# sorts colonies according to number_of_workers_at_exposure_start
+I1 <- order(pollen_consumption$number_of_workers_at_exposure_start)
+triad <- pollen_consumption$triad [I1] #Use this in remaining code
+starting_worker_number <- sort(pollen_consumption$number_of_workers_at_exposure_start) #Use this in remaining code
+
+for (i in 1:length(unique(pollen_consumption$triad))) {
+  
+  df <- data.frame(number_of_workers_at_exposure_start = starting_worker_number [triad == i],
+                 triad = as.factor(i))
+  
+  P <- predict(M_final, newdata = df)
+  
+  lines(df$number_of_workers_at_exposure_start, P, lty = 2)
+}
+
+text(pollen_consumption$number_of_workers_at_exposure_start, pollen_consumption$summed_consumption, pollen_consumption$triad, cex = 0.9)
+```
