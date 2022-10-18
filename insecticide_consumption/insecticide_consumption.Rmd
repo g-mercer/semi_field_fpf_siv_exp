@@ -44,7 +44,7 @@ class(insecticide_consumption$number_of_workers_at_exposure_start)
 Sort out the cleveland dotplot encoding. 
 
 ```{r}
-# for a cleveland dotplot to work treatment has to be coded 1-3. 
+# for a cleveland dotplot to work treatment has to be coded 1-2. 
 insecticide_consumption$clevelandcode <- 0 
 
 for (i in 1:nrow(insecticide_consumption)) {

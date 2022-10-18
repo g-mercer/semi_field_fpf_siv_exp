@@ -1,0 +1,766 @@
+---
+title: "Reproductive Number Bayesian"
+author: "Guy Mercer"
+date: '2022-10-04'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+Import
+
+```{r}
+male_num <- read.csv("input/total_male_number.csv")
+```
+
+Remove colony 57 as male number was not calculated (killed the queen by mistake so excluded).
+
+```{r}
+male_num <- male_num [male_num$colony_number != "57",]
+```
+
+Check all the variables are in the right class.
+
+```{r}
+library(tidyverse)
+
+class_check <- tibble()
+
+for (i in 1:ncol(male_num)) {
+  
+  class <- class(male_num [, i])
+  
+  class_check [i, 1] <- class
+  
+  class_check [i, 2] <- colnames(male_num [i])
+}
+
+# they are not all in the correct class. Swap integer to numeric and factor where suitable.
+male_num$colony_number <- as.factor(male_num$colony_number)
+male_num$total_reproductive_output <- as.numeric(male_num$total_reproductive_output)
+male_num$total_male_number <- as.numeric(male_num$total_male_number)
+male_num$block <- as.factor(male_num$block)
+male_num$triad <- as.factor(male_num$triad)
+male_num$number_of_workers_at_exposure_start <- as.numeric(male_num$number_of_workers_at_exposure_start)
+male_num$time_to_egg_laying <- as.numeric(male_num$time_to_egg_laying)
+male_num$time_to_6_workers <- as.numeric(male_num$time_to_6_workers)
+male_num$time_to_exposure_start <- as.numeric(male_num$time_to_exposure_start)
+male_num$queen_capture_day <- as.numeric(male_num$queen_capture_day)
+male_num$queen_survival_days <- as.numeric(male_num$queen_survival_days)
+
+# rename variables first to make life easier
+colnames(male_num) <- c("col_num", "repro_num", "male_num", "block", "treatment", "triad",
+                        "camp_loc", "rear_loc", "workers", "TTEL", "TT6W", "TTES", "QCD",
+                        "wax_moth", "queen_surv")
+```
+
+My project is an experiment. This more than anything determines the variables I should include in the model. My experimental design indicates:
+
+male_number \~ treatment + starting_worker_number + (1\|block/triad) + (1\|campus_location)
+
+Additionally, two other variables may be important - wax_moth and time to egg laying
+
+Wax Moth - If a colony got infested with wax moth once placed in the field this could have reduced male output, depending on when in the colony cycle the infestation occurred.
+
+Time to Egg Laying - This variable is less clear but the time it took the queen to lay eggs may be indicative of their underlying fitness. I doubt this is going explain male number. However, I can not tell until I have examined the posterior predictions.
+
+To make everything simpler, remove all the other variables. I can justify omitting every other variable:
+
+Queen Capture Date - No clear biological mechanism to associate this with colony male number output
+
+Time to Exposure Start - Unsuitable as different numbers of workers were present for each colony at this timepoint.
+
+Time to 6 Workers - Workload when queen rearing stage overlapped with experimental stage resulted in this variable being inaccurate.
+
+Rearing Location - Conditions were between 26-28 degrees and 50-60% humidity in both rooms.
+
+Reproductive Number - So few queens this is essentially the same as male number.
+
+Queen Survival - This was included to explain the false zeros in my dataset. Although interesting this isn't the aim of the study. Characterising that there are false zeros in enough (intercept only binomial process in zero inflated model).
+
+starting_worker_number is not an explanatory variable of interest. However, it will have a large effect on male_number so has to be included in some form. I considered including it as an offset variable but that assumes that the rate is constant, which may not be true (if anything this would not be true, adding one worker to a smaller colony would have a larger effect than adding one worker to a large colony, therefore rate is not constant). All the examples in statistical rethinking have a clearer relationship. For example, counts per day (day vs week recording), area of sampling, volume of sampling (Zuur).
+
+So my starting model will be:
+
+male_number \~ treatment + starting_worker_number + wax_moth + TTEL + (1\|block/triad) + (1\|campus_location)
+
+with the suspicion that TTEL will not have much of an effect and can probably be dropped.
+
+Interaction terms are another hurdle. Treatment could negatively interact with starting worker number (as starting worker number increases the effect of treatment decreases) and positively interact with wax moth (the insecticide treatment groups could have a greater effect when wax moth is present due to synergy)
+
+adding in these consideration I end up with:
+
+male_number \~ treatment + log(starting_worker_number) + wax_moth + log(TTEL) + treatment:log(starting_worker_number) + treatment:wax_moth + (1\|block/triad) + (1\|campus_location)
+
+There is also the annoyance that when starting_worker_number = 0 male_number = 0 (a queen, as far as I'm aware always produces workers first, if she never produces workers she'll never go on to produce males). The interaction term, although not included for this purpose, will help tackle this.
+
+Why log(starting_worker_number) and log(TTEL) in the model. This creates a more realistic relationship between male_number and the two variables. For example, biologically it is likely that increasing starting_worker_number (SWN) by one at small values of SWN has a larger effect on male_number than increasing SWN by one at high values of SWN. Once, say SWN = 20, the effect of having more workers at the beginning is minimal (25 not much better than 20). Contrast that from going from 5 -\> 10 SWN, which is double and would really increase likelihood of survival and male production once placed in field. This what using log(starting_worker_number) in model represents.
+
+Two important hurdles to navigate are whether I require a NB (gamma-poisson) and if my data is zero inflated. From my previous attempt at tackling this dataset I am pretty sure they are required. However, I need to attempt this again.
+
+I also need to think of sensible priors the above model considering they are on the poisson scale. Prior draws are going to be necessary to help me.
+
+Also going to have to standardise starting worker number and TTEL.
+
+Furthermore, if SWN relationship with MN linear?
+
+```{r}
+# remove all but the variables in initial model
+males <- male_num [, grep("col_num|male_num|block|treatment|triad|camp_loc|workers|TTEL|wax_moth", colnames(male_num))]
+
+# standardise workers
+males$log_workers_std <- (log(males$workers) - mean(log(males$workers))) / sd(log(males$workers))
+
+# standardise TTEL
+males$log_TTEL_std <- (log(males$TTEL) - mean(log(males$TTEL))) / sd(log(males$TTEL))
+
+# check class again
+class_check <- tibble()
+
+for (i in 1:ncol(males)) {
+  
+  class <- class(males [, i])
+  
+  class_check [i, 1] <- class
+  
+  class_check [i, 2] <- colnames(males [i])
+}
+
+males$treatment <- as.factor(male_num$treatment)
+males$camp_loc <- as.factor(male_num$camp_loc)
+males$wax_moth <- as.factor(male_num$wax_moth)
+```
+
+Cleveland dot plot to identify any potential outliers. 
+
+Sort out the cleveland dotplot encoding.
+
+```{r}
+# for a cleveland dotplot to work treatment has to be coded 1-3. 
+males$clevelandcode <- 0 
+
+for (i in 1:nrow(male_num)) {
+  
+  if (males$treatment [i] == "control") {
+    
+    males$clevelandcode [i] <- 1
+    
+  }
+  
+  if (males$treatment [i] == "flup") {
+    
+    males$clevelandcode [i] <- 2
+    
+    }
+  
+  if (males$treatment [i] == "sivanto") {
+    
+    males$clevelandcode [i] <- 3
+    
+    }
+  
+}
+
+# should be numeric already anyway
+males$clevelandcode <- as.numeric(males$clevelandcode)
+```
+
+Produce some cleveland dotplots
+
+```{r}
+op <- par(mfrow = c(2, 2), mar = c(3, 3, 3, 1))
+
+dotchart(males$male_num, main = "Male Number", group = males$clevelandcode)
+dotchart(males$workers, main = "Workers At Start", group = males$clevelandcode)
+dotchart(males$TTEL, main = "TTEL", group = males$clevelandcode)
+
+par(op)
+```
+
+There are 3 large male number colonies and one particularly large starting worker number colony. 
+
+```{r}
+library(brms)
+
+# model with non-linear syntax
+m_poiss <- 
+  brm(data = males, 
+      family = poisson,
+      bf(male_num ~ 0 + a + b + c*log_workers_std + d*log_TTEL_std, 
+         a ~ 1 + (1 | block) + (1 | camp_loc), 
+         b ~ 0 + treatment:wax_moth,
+         c ~ 0 + treatment,
+         d ~ 1,
+         nl = TRUE),
+      c(prior(normal(0, 1.5), class = b, coef = Intercept, nlpar = a),
+        prior(exponential(1), class = sd, group = block, nlpar = a),
+        prior(exponential(1), class = sd, group = camp_loc, nlpar = a),
+        prior(normal(0, 0.5), class = b, nlpar = b),
+        prior(normal(0, 0.5), class = b, nlpar = c),
+        prior(normal(0, 0.5), class = b, nlpar = d)),
+      iter = 5000, warmup = 2500, chains = 4, cores = 4,
+      control = list(adapt_delta = 0.99))
+
+summary(m_poiss)
+```
+
+See whether my dataset is zero inflated.
+
+```{r}
+#proportion of 0's in the data
+dat.zip.tab<-table(males$male_num==0)
+dat.zip.tab/sum(dat.zip.tab)
+
+#proportion of 0's expected from a Poisson distribution
+mu <- mean(males$male_num)
+cnts <- rpois(10000, mu)
+dat.zip.tabE <- table(cnts == 0)
+dat.zip.tabE/sum(dat.zip.tabE)
+```
+
+What the above does is calculate the proportion of zeros in my dataset and compares it to the number of zeros expected from a poisson distribution with the same mean as the dataset. No zeros are expected from a poisson distribution with the mean of the dataset. A negative binomial could deal with this or a ZIP.
+
+Is a poisson distribution a good fit for the data?
+
+You can explore this by examining the simulated residuals. Quote from step by step walk through of analysis,
+
+"An alternative approach is to use simulated data from the model posteriors to calculate an empirical cumulative density function from which residuals are generated as values corresponding to the observed data along the density function."
+
+```{r}
+lambda_m_poiss <- exp(fitted(m_poiss, scale='linear', summary=FALSE))[,1:nrow(males)]
+
+simRes <- function(lambda, data, n=250, plot=T, family, size=NULL,theta=NULL) {
+ require(gap)
+ N = nrow(data)
+ sim = switch(family,
+    'poisson' = matrix(rpois(n*N,apply(lambda,2,mean)),ncol=N, byrow=TRUE),
+    'negbin' = matrix(MASS:::rnegbin(n*N,apply(lambda,2,mean),size),ncol=N, byrow=TRUE),
+        'zip' = matrix(gamlss.dist:::rZIP(n*N,apply(lambda,2,mean),theta),ncol=N, byrow=TRUE)
+ )
+ a = apply(sim + runif(n,-0.5,0.5),2,ecdf)
+ resid<-NULL
+ for (i in 1:nrow(data)) resid<-c(resid,a[[i]](data$male_num[i] + runif(1 ,-0.5,0.5)))
+ if (plot==T) {
+   par(mfrow=c(1,2))
+   gap::qqunif(resid,pch = 2, bty = "n",
+   logscale = F, col = "black", cex = 0.6, main = "QQ plot residuals",
+   cex.main = 1, las=1)
+   plot(resid~apply(lambda,2,mean), xlab='Predicted value', ylab='Standardized residual', las=1)
+ }
+ resid
+}
+
+simRes(lambda_m_poiss, males, family='poisson')
+```
+
+What is this showing?
+
+The trend (black symbols) in the qq-plot appears to be overly non-linear (matching the ideal red line poorly), suggesting that the model is overdispersed.
+
+The spread of standardized (simulated) residuals in the residual plot do not appear overly non-uniform. That is there is not a trend in the residuals.
+
+Furthermore, there is a concentration of points close to 1 or 0 (which would imply overdispersion). Hence, the model does display overdispersion.
+
+Fit a negative binomial model.
+
+```{r}
+m_nb <- brm(data = males, 
+      family = negbinomial(),
+      bf(male_num ~ 0 + a + b + c*log_workers_std + d*log_TTEL_std, 
+         a ~ 1 + (1 | block) + (1 | camp_loc), 
+         b ~ 0 + treatment:wax_moth,
+         c ~ 0 + treatment,
+         d ~ 1,
+         nl = TRUE),
+      c(prior(normal(0, 1.5), class = b, coef = Intercept, nlpar = a),
+        prior(exponential(1), class = sd, group = block, nlpar = a),
+        prior(exponential(1), class = sd, group = camp_loc, nlpar = a),
+        prior(normal(0, 0.5), class = b, nlpar = b),
+        prior(normal(0, 0.5), class = b, nlpar = c),
+        prior(normal(0, 0.5), class = b, nlpar = d),
+        prior(gamma(0.01, 0.01), class = shape)), 
+      iter = 5000, warmup = 2500, chains = 4, cores = 4,
+      control = list(adapt_delta = 0.99))
+
+summary(m_nb)
+```
+
+Look at the simulated residuals
+
+```{r}
+lambda_m_nb <- exp(fitted(m_nb, scale='linear', summary=FALSE))[,1:nrow(males)]
+
+size <- 1/mean(rstan:::extract(m_nb$fit, 'shape')[[1]]) #brms works in alpha, which is 1/psi
+
+simRes <- function(lambda, data, n=250, plot=T, family, size=NULL,theta=NULL) {
+ require(gap)
+ N = nrow(data)
+ sim = switch(family,
+    'poisson' = matrix(rpois(n*N,apply(lambda,2,mean)),ncol=N, byrow=TRUE),
+    'negbin' = matrix(MASS:::rnegbin(n*N,apply(lambda,2,mean),size),ncol=N, byrow=TRUE),
+    'zip' = matrix(gamlss.dist:::rZIP(n*N,apply(lambda,2,mean),theta),ncol=N, byrow=TRUE),
+    'zinb' = matrix(gamlss.dist:::rZINBI(n*N,apply(lambda,2,mean),sigma=theta,nu=size),ncol=N,
+                    byrow=TRUE)
+ )
+ a = apply(sim + runif(n,-0.5,0.5),2,ecdf)
+ resid<-NULL
+ for (i in 1:nrow(data)) resid<-c(resid,a[[i]](data$male_num[i] + runif(1 ,-0.5,0.5)))
+ if (plot==T) {
+   par(mfrow=c(1,2))
+   gap::qqunif(resid,pch = 2, bty = "n",
+   logscale = F, col = "black", cex = 0.6, main = "QQ plot residuals",
+   cex.main = 1, las=1)
+   plot(resid~apply(lambda,2,mean), xlab='Predicted value', ylab='Standardized residual', las=1)
+ }
+ resid
+}
+
+simRes(lambda_m_nb, males, family='negbin', size=size)
+```
+
+Now the trend is the qq-plot is better, although not perfect.
+
+The spread of standardized (simulated) residuals in the residual plot does not appear overly non-uniform. That is there is not a trend in the residuals.
+
+Now there is no concentration of points close to 1 or 0 (which would imply overdispersion). Hence, once a gamma-poisson is applied, the model does not display overdispersion.
+
+Also have a look at posterior predictive checks [vignette](https://mc-stan.org/bayesplot/articles/graphical-ppcs.html). May seem early but it helps determine if the model does well at predicting the number of zeros in the dataset.
+
+```{r}
+# outcome values
+y <- males$male_num
+
+# matrix yrep of draws from the posterior predictive distribution
+yrep_poisson <- posterior_predict(m_poiss, draws = 500)
+yrep_nb <- posterior_predict(m_nb, draws = 500)
+
+# for the poisson
+# ppc_density_overlay
+color_scheme_set("brightblue")
+ppc_dens_overlay(y, yrep_poisson[1:50, ])
+
+# histograms
+ppc_hist(y, yrep_poisson[1:5, ])
+
+# for the negative binomial
+# ppc_density_overlay
+color_scheme_set("brightblue")
+ppc_dens_overlay(y, yrep_nb[1:50, ]) + xlim(0,1000)
+
+# histograms
+ppc_hist(y, yrep_nb[1:5, ])
+
+# proportion of zeros in dataset
+prop_zero <- function(x) mean(x == 0)
+prop_zero(y) # check proportion of zeros in y
+ppc_stat(y, yrep_poisson, stat = "prop_zero", binwidth = 0.005)
+ppc_stat(y, yrep_nb, stat = "prop_zero")
+
+# max values
+ppc_stat(y, yrep_poisson, stat = "max")
+ppc_stat(y, yrep_nb, stat = "max") + coord_cartesian(xlim = c(-1, 1000))
+
+```
+
+Posterior draws show that the negative binomial distribution can produce the number of zeros in the dataset (although rarely) but also produces values much larger than anything in the dataset.
+
+So is a ZIP maybe the correct approach. No because this would also be overdispersed (the variance in the dataset is larger than the mean, from the simulated residuals) Therefore, a negative binomial is the distribution with the largest entropy, whilst remaining consistent with what we know about the process (variance > mean).
+
+Have a look at a ZINB.
+
+```{r}
+m_zinb <- 
+  brm(data = males, 
+      family = zero_inflated_negbinomial(),
+      bf(male_num ~ 0 + a + b + c*log_workers_std + d*log_TTEL_std,
+         a ~ 1 + (1 | block) + (1 | camp_loc), 
+         b ~ 0 + treatment:wax_moth,
+         c ~ 0 + treatment,
+         d ~ 1,
+         nl = TRUE),
+      c(prior(normal(0, 1.5), class = b, coef = Intercept, nlpar = a),
+        prior(exponential(1), class = sd, group = block, nlpar = a),
+        prior(exponential(1), class = sd, group = camp_loc, nlpar = a),
+        prior(normal(0, 0.5), class = b, nlpar = b),
+        prior(normal(0, 0.5), class = b, nlpar = c),
+        prior(normal(0, 0.5), class = b, nlpar = d),
+        prior(beta(2, 6), class = zi), # shifts the prior closer towards 0.
+        prior(gamma(0.01, 0.01), class = shape)), 
+      iter = 5000, warmup = 2500, chains = 4, cores = 4,
+      control = list(adapt_delta = 0.99))
+
+# summary(m_zinb)
+
+# matrix yrep of draws from the posterior predictive distribution
+yrep_zinb <- posterior_predict(m_zinb, draws = 500)
+
+# for the zinb
+# ppc_density_overlay
+color_scheme_set("brightblue")
+ppc_dens_overlay(y, yrep_zinb[1:50, ]) + xlim(0,1000)
+
+# histograms
+ppc_hist(y, yrep_zinb[1:5, ])
+
+# proportion of zeros in dataset
+prop_zero <- function(x) mean(x == 0)
+prop_zero(y) # check proportion of zeros in y
+ppc_stat(y, yrep_zinb, stat = "prop_zero")
+```
+
+```{r}
+lambda_m_zinb <- exp(fitted(m_zinb, scale='linear', summary=FALSE))[,1:nrow(males)]
+
+size <- 1/mean(rstan:::extract(m_zinb$fit, 'shape')[[1]]) #brms works in alpha, which is 1/psi
+
+theta <- mean(rstan:::extract(m_zinb$fit, 'zi')[[1]])
+
+simRes <- function(lambda, data, n=250, plot=T, family, size=NULL,theta=NULL) {
+ require(gap)
+ N = nrow(data)
+ sim = switch(family,
+    'poisson' = matrix(rpois(n*N,apply(lambda,2,mean)),ncol=N, byrow=TRUE),
+    'negbin' = matrix(MASS:::rnegbin(n*N,apply(lambda,2,mean),size),ncol=N, byrow=TRUE),
+    'zip' = matrix(gamlss.dist:::rZIP(n*N,apply(lambda,2,mean),theta),ncol=N, byrow=TRUE),
+    'zinb' = matrix(gamlss.dist:::rZINBI(n*N,apply(lambda,2,mean),sigma=theta,nu=size),ncol=N,
+                    byrow=TRUE)
+ )
+ a = apply(sim + runif(n,-0.5,0.5),2,ecdf)
+ resid<-NULL
+ for (i in 1:nrow(data)) resid<-c(resid,a[[i]](data$male_num[i] + runif(1 ,-0.5,0.5)))
+ if (plot==T) {
+   par(mfrow=c(1,2))
+   gap::qqunif(resid,pch = 2, bty = "n",
+   logscale = F, col = "black", cex = 0.6, main = "QQ plot residuals",
+   cex.main = 1, las=1)
+   plot(resid~apply(lambda,2,mean), xlab='Predicted value', ylab='Standardized residual', las=1)
+ }
+ resid
+}
+
+simRes(lambda_m_zinb, males, family='zinb', size=size, theta=theta)
+```
+
+Instead of an underprediction of zeros with the NB now there is a tendency to overpredict zeros. Also the residual plots look worse. I don't think a ZINB is necessary so stick with a NB.
+
+What about linearity with starting worker number and TTEL?
+
+```{r}
+#now for the scatterplot of male number vs log workers
+plot(male_num ~ log(workers), males, log="y")
+with(subset(males, male_num>0), lines(lowess(male_num ~ log(workers))))
+
+#now for the scatterplot of male number vs log TTEL
+plot(male_num ~ log(TTEL), males, log="y")
+with(subset(males, male_num>0), lines(lowess(male_num ~ log(TTEL))))
+```
+
+male number vs log workers looks linear but TTEL looks slightly problematic. 
+
+Check how the MCMC is performing. Use trace and trank plots. Fit model with one chain first and remove adapt delta to see if divergent transitions are produced.
+
+```{r}
+m_nb_single_chain <- 
+  brm(data = males, 
+      family = negbinomial(),
+      bf(male_num ~ 0 + a + b + c*log_workers_std + d*log_TTEL_std,
+         a ~ 1 + (1 | block) + (1 | camp_loc), 
+         b ~ 0 + treatment:wax_moth,
+         c ~ 0 + treatment,
+         d ~ 1,
+         nl = TRUE),
+      c(prior(normal(0, 1.5), class = b, coef = Intercept, nlpar = a),
+        prior(exponential(1), class = sd, group = block, nlpar = a),
+        prior(exponential(1), class = sd, group = camp_loc, nlpar = a),
+        prior(normal(0, 0.5), class = b, nlpar = b),
+        prior(normal(0, 0.5), class = b, nlpar = c),
+        prior(normal(0, 0.5), class = b, nlpar = d),
+        prior(gamma(0.01, 0.01), class = shape)), 
+      iter = 20000, warmup = 5000, chains = 1)
+
+summary(m_nb_single_chain)
+```
+
+No error messages come up with one chain, which is a good sign. 
+
+Redefine m_nb again with high adapt_delta and warm up. 
+
+```{r}
+m_nb <- 
+  brm(data = males, 
+      family = negbinomial(),
+      bf(male_num ~ 0 + a + b + c*log_workers_std + d*log_TTEL_std,
+         a ~ 1 + (1 | block) + (1 | camp_loc), 
+         b ~ 0 + treatment:wax_moth,
+         c ~ 0 + treatment,
+         d ~ 1,
+         nl = TRUE),
+      c(prior(normal(4, 0.3), class = b, coef = Intercept, nlpar = a),
+        prior(exponential(1), class = sd, group = block, nlpar = a),
+        prior(exponential(1), class = sd, group = camp_loc, nlpar = a),
+        prior(normal(0, 0.5), class = b, nlpar = b),
+        prior(normal(0, 0.2), class = b, nlpar = c),
+        prior(normal(0, 0.2), class = b, nlpar = d),
+        prior(gamma(0.01, 0.01), class = shape)), 
+      iter = 5000, warmup = 2500, chains = 4, cores = 4,
+      control = list(adapt_delta = 0.99))
+
+summary(m_nb)
+```
+
+Pairsplot
+
+```{r}
+# pairs(m4, off_diag_args = list(size = 1/5, alpha = 1/5))
+```
+
+Traceplot
+
+```{r}
+plot(m_nb, widths = c(1, 2))
+```
+
+Have a look at the warm up iterations
+
+```{r}
+library(ggmcmc)
+library(viridis)
+
+ggs(m_nb) %>% 
+  str()
+
+ggs(m_nb) %>%
+  mutate(chain = factor(Chain)) %>% 
+  
+  ggplot(aes(x = Iteration, y = value)) +
+  # this marks off the warmups
+  geom_line(aes(color = chain),
+            size = .15) +
+
+  labs(title = "My custom trace plots with warmups via ggmcmc::ggs()",
+       x = NULL, y = NULL) +
+  theme(legend.position = c(.95, .18)) +
+  facet_wrap(~ Parameter, scales = "free_y")
+```
+
+Above plots indicate good stationarity, mixing and convergence. 
+
+Zoom in on first 50 iterations
+
+```{r}
+ggs(m_nb) %>%
+  mutate(chain = factor(Chain)) %>% 
+  
+  ggplot(aes(x = Iteration, y = value, color = chain)) +
+  geom_line(size = .5) +
+  labs(title = "Another custom trace plots with warmups via ggmcmc::ggs()",
+       x = NULL, y = NULL) +
+  coord_cartesian(xlim = c(1, 50)) +
+  theme(legend.position = c(.95, .18)) +
+  facet_wrap(~ Parameter, scales = "free_y")
+```
+
+This shows that even after 50 iterations convergence is good. 
+
+autocorrelation plots
+
+```{r}
+library(bayesplot)
+
+as_draws_df(m_nb) %>% 
+  mcmc_acf(pars = vars(b_a_Intercept:shape), lags = 10)
+```
+
+Autocorrelation for the intercept, sd_block and sd_camp_loc. Keep an eye on the n_eff and tail_eff for these parameters.
+
+Trankplots
+
+```{r}
+as_draws_df(m_nb) %>%  
+  mcmc_rank_overlay(pars = vars(b_a_Intercept:shape)) +
+  labs(title = "My custom trank plots",
+       x = NULL) +
+  coord_cartesian(ylim = c(100, NA)) +
+  theme(legend.position = c(.95, .2))
+```
+
+Trankplots look well mixed. 
+
+Remember adapt_delta increases the acceptance rate in warmup. Stan’s target acceptance rate is controlled by the adapt_delta control parameter.The ulam default is 0.95, which means that it aims to attain a 95% acceptance rate. It tries this during the warmup phase,adjusting the step size of each leap frog step. When adapt_delta is set high,it results in a smaller step size,which means a more accurate approximation of the curved surface. It can also mean slower exploration of the distribution. Increasing adapt_delta will often, but not always, help with divergent transitions.
+
+Up to this point, apart for some autocorrelation for the intercept and 2 sd terms (probably problematic because only 4/5 groups respectively), everything seems to be working. 
+
+I did not have any divergent transitions. If i did, this [vignette](https://mc-stan.org/bayesplot/articles/visual-mcmc-diagnostics.html) would be extremely useful for determining why.
+
+```{r}
+# extract posterior draws
+m_nb_draws <- as.array(m_nb)
+
+m_nb_np <- nuts_params(m_nb)
+
+m_nb_lp <- log_posterior(m_nb)
+
+# Energy and Bayesian fraction of missing information - Do the histograms look the same?
+color_scheme_set("red")
+mcmc_nuts_energy(m_nb_np)
+
+# Rhat: potential scale reduction statistic, comparing within and between chain variance
+rhats <- rhat(m_nb)
+color_scheme_set("brightblue") # see help("color_scheme_set")
+mcmc_rhat(rhats) + yaxis_text(hjust = 1)
+
+# effective sample size ratio
+ratios_m_nb <- neff_ratio(m_nb)
+mcmc_neff(ratios_m_nb, size = 2) + yaxis_text(hjust = 1)
+```
+
+I think that the MCMC is working well enough to move on. 
+
+Show why these priors are sensible using prior draws. 
+
+For the treatment intercepts, I can base this on previous work to some degree. Harry's control colonies had a mean of 15 males. So I expected my colonies to be of this magnitude (0-100).
+
+As I am using a log link normal priors will become log-Normal distributed on the outcome scale. 
+
+The mean of the log-Normal distribution is  
+
+exp(μ + σ^2 / 2)
+
+```{r}
+exp(0 + 0.5^2 / 2)
+```
+
+So if give me prior a mean of appoximately 50, this can be achieved with a prior of Normal(4, 0.3). Use the chunk below to visualise how changing the parameters of a log normal distribution affects the shape. 
+
+```{r}
+library(wesanderson)
+
+tibble(x       = c(3, 22),
+       y       = c(0.055, 0.04),
+       meanlog = c(0, 4),
+       sdlog   = c(0.5, 0.3)) %>% 
+  expand(nesting(x, y, meanlog, sdlog),
+         number = seq(from = 0, to = 100, length.out = 200)) %>% 
+  mutate(density = dlnorm(number, meanlog, sdlog),
+         group   = str_c("alpha%~%Normal(", meanlog, ", ", sdlog, ")")) %>% 
+  
+  ggplot(aes(fill = group, color = group)) +
+  geom_area(aes(x = number, y = density),
+            alpha = 3/4, size = 0, position = "identity") +
+  geom_text(data = . %>% group_by(group) %>% slice(1),
+            aes(x = x, y = y, label = group),
+            family = "Times", parse = T,  hjust = 0) +
+  scale_fill_manual(values = wes_palette("Moonrise2")[1:2]) +
+  scale_color_manual(values = wes_palette("Moonrise2")[1:2]) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  xlab("Male Number") +
+  theme(legend.position = "none")
+```
+
+What about the slopes?
+
+```{r}
+# how many lines would you like?
+n <- 100
+
+# simulate and wrangle
+tibble(i = 1:n,
+       a = rnorm(n, mean = 4, sd = 0.3)) %>% 
+  mutate(`beta%~%Normal(0*', '*10)`  = rnorm(n, mean = 0 , sd = 10),
+         `beta%~%Normal(0*', '*0.2)` = rnorm(n, mean = 0 , sd = 0.2)) %>% 
+  pivot_longer(contains("beta"),
+               values_to = "b",
+               names_to = "prior") %>% 
+  expand(nesting(i, a, b, prior),
+         x = seq(from = -3, to = 3, length.out = 100)) %>% 
+  
+  # plot
+  ggplot(aes(x = x, y = exp(a + b * x), group = i)) +
+  geom_line(size = 1/4, alpha = 2/3,
+            color = wes_palette("Moonrise2")[4]) +
+  labs(x = "log starting worker number (std)",
+       y = "male number") +
+  coord_cartesian(ylim = c(0, 200)) +
+  facet_wrap(~ prior, labeller = label_parsed)
+```
+
+On log worker scale and worker scale?
+
+```{r}
+prior <-
+  tibble(i = 1:n,
+         a = rnorm(n, mean = 4, sd = 0.3),
+         b = rnorm(n, mean = 0, sd = 0.2)) %>% 
+  expand(nesting(i, a, b),
+         x = seq(from = log(1), to = log(30), length.out = 100))
+
+# left
+p1 <-
+  prior %>% 
+  ggplot(aes(x = x, y = exp(a + b * x), group = i)) +
+  geom_line(size = 1/4, alpha = 2/3,
+            color = wes_palette("Moonrise2")[4]) +
+  labs(subtitle = expression(beta%~%Normal(0*', '*0.2)),
+       x = "log worker number",
+       y = "male number") +
+  coord_cartesian(xlim = c(log(1), log(30)),
+                  ylim = c(0, 300))
+# right
+p2 <-
+  prior %>% 
+  ggplot(aes(x = exp(x), y = exp(a + b * x), group = i)) +
+  geom_line(size = 1/4, alpha = 2/3,
+            color = wes_palette("Moonrise2")[4]) +
+  labs(subtitle = expression(beta%~%Normal(0*', '*0.2)),
+       x = "worker number",
+       y = "male number") +
+  coord_cartesian(xlim = c(0, 30),
+                  ylim = c(0, 300))
+
+# combine
+p1
+p2
+```
+
+This relationships holds for TTEL (d in the model) too. 
+
+Visualise the shapes for each scale of worker number and check the priors.
+
+Think about how to define the b prior (how treatment:wax_moth affects the grand mean). 
+
+What is the effect of changing the parameters for c, the slopes?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Pareto K values. plot data and superimpose posterior predictions. 
+
+Check that all my priors are sensible after log transformation. Visualise this using prior draws. 
+
+For the wax moth:treatment interaction for every treatment group wax moth results in a reduction of male number. This suggests that the interaction term is unnecessary. Compute and check the PSIS-LOO estimates along with their diagnostic Pareto k values.
+
+```{r}
+b12.2b <- add_criterion(b12.2b, "loo")
+loo(b12.2b)
+```

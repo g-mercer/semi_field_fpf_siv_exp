@@ -1,0 +1,1025 @@
+---
+title: "Reproductive Number Take 2"
+author: "Guy Mercer"
+date: '2022-09-09'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+Import
+
+```{r}
+male_num <- read.csv("input/total_male_number.csv")
+```
+
+Remove colony 57 as male number was not calculated (killed the queen by
+mistake so excluded).
+
+```{r}
+male_num <- male_num [male_num$colony_number != "57",]
+```
+
+Check all the variables are in the right class.
+
+```{r}
+library(tidyverse)
+
+class_check <- tibble()
+
+for (i in 1:ncol(male_num)) {
+  
+  class <- class(male_num [, i])
+  
+  class_check [i, 1] <- class
+  
+  class_check [i, 2] <- colnames(male_num [i])
+}
+
+# they are not all in the correct class. Swap integer to numeric and factor where suitable.
+male_num$colony_number <- as.factor(male_num$colony_number)
+male_num$total_reproductive_output <- as.numeric(male_num$total_reproductive_output)
+male_num$total_male_number <- as.numeric(male_num$total_male_number)
+male_num$block <- as.factor(male_num$block)
+male_num$triad <- as.factor(male_num$triad)
+male_num$number_of_workers_at_exposure_start <- as.numeric(male_num$number_of_workers_at_exposure_start)
+male_num$time_to_egg_laying <- as.numeric(male_num$time_to_egg_laying)
+male_num$time_to_6_workers <- as.numeric(male_num$time_to_6_workers)
+male_num$time_to_exposure_start <- as.numeric(male_num$time_to_exposure_start)
+male_num$queen_capture_day <- as.numeric(male_num$queen_capture_day)
+male_num$queen_survival_days <- as.numeric(male_num$queen_survival_days)
+
+# rename variables first to make life easier
+colnames(male_num) <- c("col_num", "repro_num", "male_num", "block", "treatment", "triad",
+                        "camp_loc", "rear_loc", "workers", "TTEL", "TT6W", "TTES", "QCD",
+                        "wax_moth", "queen_surv")
+```
+
+Look for outliers in the response and explanatory variables to determine
+if any points may be removed or transformations performed.
+
+Sort out the cleveland dotplot encoding.
+
+```{r}
+# for a cleveland dotplot to work treatment has to be coded 1-3. 
+male_num$clevelandcode <- 0 
+
+for (i in 1:nrow(male_num)) {
+  
+  if (male_num$treatment [i] == "control") {
+    
+    male_num$clevelandcode [i] <- 1
+    
+  }
+  
+  if (male_num$treatment [i] == "flup") {
+    
+    male_num$clevelandcode [i] <- 2
+    
+    }
+  
+  if (male_num$treatment [i] == "sivanto") {
+    
+    male_num$clevelandcode [i] <- 3
+    
+    }
+  
+}
+
+# should be numeric already anyway
+male_num$clevelandcode <- as.numeric(male_num$clevelandcode)
+```
+
+Produce some cleveland dotplots
+
+```{r}
+op <- par(mfrow = c(2, 2), mar = c(3, 3, 3, 1))
+
+dotchart(male_num$male_num, main = "Male Number", group = male_num$clevelandcode)
+dotchart(male_num$workers, main = "Workers At Start", group = male_num$clevelandcode)
+dotchart(male_num$TTEL, main = "TTEL", group = male_num$clevelandcode)
+dotchart(male_num$queen_surv, main = "Queen Survival", group = male_num$clevelandcode)
+
+par(op)
+```
+
+Remove TT6W and TTES as TT6W is inaccurate and TTES is unsuitable as different numbers of workers were present for each colony at this timepoint. For TTEL this represents the same state for each colony so could be indicative of underlying queen fitness. Also remove QCD as I can't see how it would have any predictive power and overcomplicates my beyond optimal model. Remove rearing location as this also complicates the model and had no predictive power during my initial modelling attempt
+
+```{r}
+male_num <- male_num [, colnames(male_num) != "TT6W"]
+male_num <- male_num [, colnames(male_num) != "TTES"]
+male_num <- male_num [, colnames(male_num) != "QCD"]
+male_num <- male_num [, colnames(male_num) != "rear_loc"]
+```
+
+Square root transform worker number and look at dotplot.
+
+```{r}
+male_num$sqrtworkers <- sqrt(male_num$workers)
+
+dotchart(male_num$sqrtworkers, main = "Workers At Start", group = male_num$clevelandcode)
+```
+
+```{r}
+# sources the functions required.
+source("~/local_package_source/HighstatLibV10.R")
+
+Z <- cbind(male_num$male_num, male_num$workers, male_num$TTEL, male_num$queen_surv)
+
+colnames(Z) <- c("male_num", "workers", "TTEL", "queen_surv")
+
+pairs(Z, lower.panel = panel.smooth2,
+upper.panel = panel.cor, diag.panel = panel.hist)
+```
+
+```{r}
+corvif(Z[, -1])
+
+# everything < 3
+```
+
+No collinearity by looking pairplots and VIF values. Pairplot of workers vs male_num suggests there could be a relationship.
+
+Have a look at each categorical variable vs male number
+
+```{r}
+boxplot(male_num ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Male Number Vs Treatment", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Boxplot of Male Number Vs Block", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Boxplot of Male Number Vs Triad", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Boxplot of Male Number Vs Campus Location", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Boxplot of Male Number Vs Wax Moth", 
+        ylab = "Number of males", data = male_num)
+```
+
+Looks like campus location and block are important. 
+
+My beyond optimal model is this:
+
+male_number ~ treatment + campus_location + wax_moth + workers_at_start + TTEL + treatment:workers_at_start + treatment:TTEL +
+treatment:campus_location + treatment:wax_moth + campus_location:workers_at_start
+
+p395 of Zuur they say, 
+
+"There are 17 explanatory variables and only 52 observations. With such a low number of observations, we prefer not to use more than 5 or 6 explanatory variables, especially if we intend to use smoothing techniques."
+
+This alone is strong justification for removing the less important variables before defining my beyond optimal model. 
+
+Centre starting worker number to aid intercept interpretation.
+
+```{r}
+male_num$sqrtworkers <- male_num$sqrtworkers - mean(male_num$sqrtworkers)
+```
+
+I have 4 options, Poisson GLM, NB GLM, ZIP and ZINB. Define each.
+
+```{r}
+f1 <- formula(male_num ~ treatment + camp_loc + wax_moth + sqrtworkers + TTEL + treatment:sqrtworkers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:sqrtworkers)
+
+# poisson
+M_POISS <- glm(f1, family = poisson, data = male_num)
+
+# NB
+library(MASS)
+
+M_NB <- glm.nb(f1, link = "log", data = male_num)
+
+library(pscl)
+
+f2 <- formula(male_num ~ treatment + camp_loc + wax_moth + sqrtworkers + TTEL + treatment:sqrtworkers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:sqrtworkers | 1 + queen_surv)
+
+# ZIP
+M_ZIP <-zeroinfl(f2, dist = "poisson",
+                 link = "logit", data = male_num)
+
+# ZINB
+M_ZINB <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+
+
+AIC(M_POISS, M_NB, M_ZIP, M_ZINB)
+```
+
+NB is a huge improvement on POISS. ZINB is large improvement on NB. Why is ZINB better than NB? 
+
+```{r}
+summary(M_NB)
+```
+
+What is the mean male number for this dataset?
+
+```{r}
+mean(male_num$male_num)
+```
+
+Probability of a true zero from a NB distribution = (k/(µ+k))^k (p290, Zuur). From the beyond optimal model, summary(M_NB), k = 2.0747. 
+
+(2.0747/(65.38983+2.0747))^2.0747 = 0.0007291288 or 0.07%.
+
+0.0007291288 * 59 (sample size) = 0.0430186 expected zeros
+
+We have 3 in our dataset.
+
+```{r}
+plot(table(male_num$male_num))
+```
+
+There are 3/0.0430186 = 69.73728 times more zeros than expected. This plus the AIC value supports the use of ZINB.
+
+I hope the justification above is correct. The AIC strongly supports it either way.
+
+Pearson Dispersion Statistic Function
+
+```{r}
+dispfun <- function(m) {
+    r <- residuals(m,type="pearson")
+    n <- df.residual(m)
+    dsq <- sum(r^2)
+    c(dsq=dsq,n=n,disp=dsq/n)
+}
+
+sapply(list(M_NB=M_NB, M_ZINB=M_ZINB),dispfun)
+```
+
+The pearson dispersion statistic is worse. Odd.
+
+Look at the residual plots of the beyond optimal ZINB model 
+
+```{r}
+E_ZINB <- residuals(M_ZINB, type = "pearson")
+
+mu <- predict(M_ZINB, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+boxplot(E_ZINB ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Residuals vs Treatment", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Residuals vs Block", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Residuals vs Triad", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Residuals vs Campus Location", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Residuals vs Wax Moth", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+plot(x = male_num$TTEL, y = E_ZINB, main = "Pearson residuals vs TTEL")
+abline(0,0)
+
+plot(x = male_num$sqrtworkers, y = E_ZINB, main = "Pearson residuals vs Worker Number")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 300), ylim = c(0, 300))
+```
+
+Have a look at the summary
+
+```{r}
+summary(M_ZINB)
+```
+
+What about the effect of block and triad. In previous attempts using glmmTMB did not work as the way it estimates random effect variance (laplace) did not work properly. Moved onto GLMMadaptive. The issue with this is the residuals are different and I don't understand what corresponds to pearson, response etc. All I can do with this is see what the variance for the random effect is and if the parameter estimates change drastically. Also, there is no example of comparing a GLM to a GLMM in Zuur using a likelihood ratio test. I found this online but did not fully comprehend it. Found it hard to follow the message stream. Also with GLMMadaptive you can't have nested effects. 
+
+[glm vs glmm thread](https://stat.ethz.ch/pipermail/r-sig-mixed-models/2008q3/001176.html)
+
+```{r}
+library(GLMMadaptive)
+
+M_ZINB_RAN <- mixed_model(fixed = male_num ~ treatment + camp_loc + wax_moth + sqrtworkers + TTEL + treatment:sqrtworkers + treatment:TTEL + 
+                             treatment:camp_loc + treatment:wax_moth + camp_loc:sqrtworkers,
+                          random = ~ 1 | block, data = male_num,
+                          family = zi.negative.binomial(),
+                          zi_fixed = ~ 1 + queen_surv)
+
+# paste into terminal 
+summary(M_ZINB_RAN)
+
+```
+
+Check the impact of the chosen number of quadrature points to the
+parameters estimates and the log-likelihood value at convergence. First,
+we refit the model with an increasing number of quadrature points. The
+default when the number of random effects is smaller or equal to two is
+11 points. We fit then with 15, and 21 points:
+
+```{r}
+M_ZINB_RAN_q11 <- M_ZINB_RAN
+M_ZINB_RAN_q15 <- update(M_ZINB_RAN_q11, nAGQ = 15)
+M_ZINB_RAN_q21 <- update(M_ZINB_RAN_q11, nAGQ = 21)
+
+models <- list("nAGQ=11" = M_ZINB_RAN_q11, "nAGQ=15" = M_ZINB_RAN_q15, "nAGQ=21" = M_ZINB_RAN_q21)
+```
+
+We now extract from the model the estimated parameter for the fixed
+effects (using function fixef()), for the random effects, and the
+log-likelihood (using function logLik()):
+
+```{r}
+extract <- function (obj) {
+    c(fixef(obj), "var_(Intercept)" = obj$D[1, 1], "logLik" = logLik(obj))
+}
+
+models <- list("nAGQ=11" = M_ZINB_RAN_q11, "nAGQ=15" = M_ZINB_RAN_q15, "nAGQ=21" = M_ZINB_RAN_q21)
+
+sapply(models, extract)
+```
+
+Stability of model is ok.
+
+Compare summary(M_ZINB_RAN) to summary(M_ZINB)
+
+```{r}
+summary(M_ZINB)
+
+# paste in terminal
+summary(M_ZINB_RAN)
+```
+
+StdDev of block is 0.1838398. Indicates correlation within block is minimal. Unless there are issues calculating it for some reason. For simplicity omit. 
+
+As I have so many variables and have to do it manually try forward selection like in chapter 16 of Zuur. 
+
+```{r}
+library(lmtest)
+
+# ZINB
+M_ZINB <- zeroinfl(male_num ~ treatment + camp_loc + wax_moth + sqrtworkers + TTEL + treatment:sqrtworkers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:sqrtworkers | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+# Round 1 fit 6 models and compare their AICs. Take the lowest and use that as a base.
+M_ZINBa <- zeroinfl(male_num ~ treatment | 1, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBb <- zeroinfl(male_num ~ camp_loc | 1, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBc <- zeroinfl(male_num ~ wax_moth | 1, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBd <- zeroinfl(male_num ~ sqrtworkers | 1, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBe <- zeroinfl(male_num ~ TTEL | 1, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBf <- zeroinfl(male_num ~ 1 | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+AIC(M_ZINBa, M_ZINBb, M_ZINBc, M_ZINBd, M_ZINBe, M_ZINBf)
+```
+
+Round 2 - Best Model Last Round = 603.9206
+
+```{r}
+# keep queen_surv
+# round 2
+M_ZINBfa <- zeroinfl(male_num ~ treatment | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBfb <- zeroinfl(male_num ~ camp_loc | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBfc <- zeroinfl(male_num ~ wax_moth | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBfd <- zeroinfl(male_num ~ sqrtworkers | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBfe <- zeroinfl(male_num ~ TTEL | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+AIC(M_ZINBfa, M_ZINBfb, M_ZINBfc, M_ZINBfd, M_ZINBfe)
+```
+
+Round 3 - Best Model Last Round M_ZINBfd - 598.5140
+
+```{r}
+M_ZINBfda <- zeroinfl(male_num ~ sqrtworkers + treatment | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBfdb <- zeroinfl(male_num ~ sqrtworkers + camp_loc | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBfdc <- zeroinfl(male_num ~ sqrtworkers + wax_moth | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBfdd <- zeroinfl(male_num ~ sqrtworkers + TTEL | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+AIC(M_ZINBfda, M_ZINBfdb, M_ZINBfdc, M_ZINBfdd)
+```
+
+Round 4 - Best Model Last Round M_ZINBfda - 594.3425	
+
+```{r}
+M_ZINBfdaa <- zeroinfl(male_num ~ sqrtworkers + treatment + camp_loc | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBfdab <- zeroinfl(male_num ~ sqrtworkers + treatment + wax_moth | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBfdac <- zeroinfl(male_num ~ sqrtworkers + treatment + TTEL | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+AIC(M_ZINBfdaa, M_ZINBfdab, M_ZINBfdac)
+```
+
+M_ZINBfdab - 592.2208	
+
+```{r}
+M_ZINBfdaba <- zeroinfl(male_num ~ sqrtworkers + treatment + wax_moth + camp_loc | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBfdabb <- zeroinfl(male_num ~ sqrtworkers + treatment + wax_moth + TTEL | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+AIC(M_ZINBfdaba, M_ZINBfdabb)
+```
+
+M_ZINBfdab <- zeroinfl(male_num ~ sqrtworkers + treatment + wax_moth | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+Adding another explanatory variable does not improve the model. What about interactions. Sensible interactions are sqrtworkers:treatment and wax_moth:treatment
+
+```{r}
+M_ZINBfdab <- zeroinfl(male_num ~ sqrtworkers + treatment + wax_moth | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBfdab1 <- zeroinfl(male_num ~ sqrtworkers + treatment + wax_moth + treatment:sqrtworkers | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+M_ZINBfdab2 <- zeroinfl(male_num ~ sqrtworkers + treatment + wax_moth + treatment:wax_moth | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+AIC(M_ZINBfdab, M_ZINBfdab1, M_ZINBfdab2)
+```
+
+Optimal model
+
+```{r}
+M_ZINBfdab <- zeroinfl(male_num ~ sqrtworkers + treatment + wax_moth | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+summary(M_ZINBfdab)
+```
+
+Model Validation for forward selection final. 
+
+```{r}
+M_ZINB_for_fin <- M_ZINBfdab
+
+E_ZINB_for_fin <- residuals(M_ZINB_for_fin, type = "pearson")
+
+mu <- predict(M_ZINB_for_fin, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB_for_fin, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Residuals vs Treatment", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Residuals vs Block", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Residuals vs Triad", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Residuals vs Campus Location", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Residuals vs Wax Moth", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+plot(x = male_num$TTEL, y = E_ZINB_for_fin, main = "Pearson residuals vs TTEL")
+abline(0,0)
+
+plot(x = male_num$sqrtworkers, y = E_ZINB_for_fin, main = "Pearson residuals vs Worker Number")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+Actual vs Fitted poor again and pattern in residual vs fitted. Cheers. Add back in campus location.
+
+```{r}
+M_ZINB_for_fin <- zeroinfl(male_num ~ sqrtworkers + treatment + wax_moth + camp_loc | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+E_ZINB_for_fin <- residuals(M_ZINB_for_fin, type = "pearson")
+
+mu <- predict(M_ZINB_for_fin, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB_for_fin, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Residuals vs Treatment", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Residuals vs Block", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Residuals vs Triad", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Residuals vs Campus Location", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Residuals vs Wax Moth", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+plot(x = male_num$TTEL, y = E_ZINB_for_fin, main = "Pearson residuals vs TTEL")
+abline(0,0)
+
+plot(x = male_num$sqrtworkers, y = E_ZINB_for_fin, main = "Pearson residuals vs Worker Number")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+No improvement. What about TTEL?
+
+```{r}
+M_ZINB_for_fin <- zeroinfl(male_num ~ sqrtworkers + treatment + wax_moth + TTEL | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+E_ZINB_for_fin <- residuals(M_ZINB_for_fin, type = "pearson")
+
+mu <- predict(M_ZINB_for_fin, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB_for_fin, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Residuals vs Treatment", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Residuals vs Block", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Residuals vs Triad", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Residuals vs Campus Location", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Residuals vs Wax Moth", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+plot(x = male_num$TTEL, y = E_ZINB_for_fin, main = "Pearson residuals vs TTEL")
+abline(0,0)
+
+plot(x = male_num$sqrtworkers, y = E_ZINB_for_fin, main = "Pearson residuals vs Worker Number")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+No. What about TTEL and campus location?
+
+```{r}
+M_ZINB_for_fin <- zeroinfl(male_num ~ sqrtworkers + treatment + wax_moth + TTEL + camp_loc | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+E_ZINB_for_fin <- residuals(M_ZINB_for_fin, type = "pearson")
+
+mu <- predict(M_ZINB_for_fin, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB_for_fin, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Residuals vs Treatment", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Residuals vs Block", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Residuals vs Triad", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Residuals vs Campus Location", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB_for_fin ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Residuals vs Wax Moth", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+plot(x = male_num$TTEL, y = E_ZINB_for_fin, main = "Pearson residuals vs TTEL")
+abline(0,0)
+
+plot(x = male_num$sqrtworkers, y = E_ZINB_for_fin, main = "Pearson residuals vs Worker Number")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+Add variables back in was not helping. 
+
+Try a different approach. Start with the beyond optimal model and start removing interactions. When do the residuals vs fitted and actual vs fitted start to go awry. 
+
+```{r}
+# starting 
+f2 <- formula(male_num ~ treatment + camp_loc + wax_moth + sqrtworkers + TTEL + treatment:sqrtworkers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:sqrtworkers | 1 + queen_surv)
+# ZINB
+M_ZINB <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+
+E_ZINB <- residuals(M_ZINB, type = "pearson")
+
+mu <- predict(M_ZINB, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+Even my beyond optimal model is not great. At least the residual vs fitted plot is passable. 
+
+```{r}
+# remove camp_loc:sqrtworkers
+f2 <- formula(male_num ~ treatment + camp_loc + wax_moth + sqrtworkers + TTEL + treatment:sqrtworkers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth| 1 + queen_surv)
+# ZINB
+M_ZINB <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+
+E_ZINB <- residuals(M_ZINB, type = "pearson")
+
+mu <- predict(M_ZINB, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+Can remove camp_loc:sqrtworkers.
+
+```{r}
+# remove treatment:TTEL
+f2 <- formula(male_num ~ treatment + camp_loc + wax_moth + sqrtworkers + TTEL + treatment:sqrtworkers + treatment:wax_moth +
+                     treatment:camp_loc | 1 + queen_surv)
+# ZINB
+M_ZINB <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+
+E_ZINB <- residuals(M_ZINB, type = "pearson")
+
+mu <- predict(M_ZINB, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+Can remove treatment:TTEL
+
+```{r}
+# remove TTEL
+f2 <- formula(male_num ~ treatment + camp_loc + wax_moth + sqrtworkers + treatment:sqrtworkers + treatment:wax_moth +
+                     treatment:camp_loc | 1 + queen_surv)
+# ZINB
+M_ZINB <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+
+E_ZINB <- residuals(M_ZINB, type = "pearson")
+
+mu <- predict(M_ZINB, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+Can remove TTEL
+
+```{r}
+# remove treatment:sqrtworkers
+f2 <- formula(male_num ~ treatment + camp_loc + wax_moth + sqrtworkers + treatment:wax_moth +
+                     treatment:camp_loc | 1 + queen_surv)
+# ZINB
+M_ZINB <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+
+E_ZINB <- residuals(M_ZINB, type = "pearson")
+
+mu <- predict(M_ZINB, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+```{r}
+# remove treatment:wax_moth
+f2 <- formula(male_num ~ treatment + camp_loc + wax_moth + sqrtworkers + treatment:sqrtworkers +
+                     treatment:camp_loc | 1 + queen_surv)
+# ZINB
+M_ZINB <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+
+E_ZINB <- residuals(M_ZINB, type = "pearson")
+
+mu <- predict(M_ZINB, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+```{r}
+# remove treatment:camp_loc
+f2 <- formula(male_num ~ treatment + camp_loc + wax_moth + sqrtworkers + treatment:sqrtworkers + treatment:wax_moth | 1 + queen_surv)
+# ZINB
+M_ZINB <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+
+E_ZINB <- residuals(M_ZINB, type = "pearson")
+
+mu <- predict(M_ZINB, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+Of the 3 above treatment:camp_loc looks the most important. 
+
+Try removing the other two 
+
+```{r}
+# remove treatment:camp_loc
+f2 <- formula(male_num ~ treatment + camp_loc + wax_moth + sqrtworkers + treatment:camp_loc | 1 + queen_surv)
+
+# ZINB
+M_ZINB <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+
+E_ZINB <- residuals(M_ZINB, type = "pearson")
+
+mu <- predict(M_ZINB, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+Remove wax_moth and sqrtworkers
+
+```{r}
+# remove wax_moth
+f2 <- formula(male_num ~ treatment + camp_loc + sqrtworkers + treatment:camp_loc | 1 + queen_surv)
+
+# ZINB
+M_ZINB <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+
+E_ZINB <- residuals(M_ZINB, type = "pearson")
+
+mu <- predict(M_ZINB, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+```{r}
+# remove sqrt_workers
+f2 <- formula(male_num ~ treatment + camp_loc + wax_moth + treatment:camp_loc | 1 + queen_surv)
+
+# ZINB
+M_ZINB <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+
+E_ZINB <- residuals(M_ZINB, type = "pearson")
+
+mu <- predict(M_ZINB, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+Leaves me with formula(male_num ~ treatment + camp_loc + sqrtworkers + treatment:camp_loc | 1 + queen_surv), which was the result of backwards selection from previous markdown!
+
+```{r}
+# final
+f2 <- formula(male_num ~ treatment + camp_loc + sqrtworkers + treatment:camp_loc | 1 + queen_surv)
+
+# ZINB
+M_ZINB <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+
+E_ZINB <- residuals(M_ZINB, type = "pearson")
+
+mu <- predict(M_ZINB, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+boxplot(E_ZINB ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Residuals vs Treatment", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Residuals vs Block", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Residuals vs Triad", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Residuals vs Campus Location", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Residuals vs Wax Moth", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+plot(x = male_num$TTEL, y = E_ZINB, main = "Pearson residuals vs TTEL")
+abline(0,0)
+
+plot(x = male_num$sqrtworkers, y = E_ZINB, main = "Pearson residuals vs Worker Number")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 250), ylim = c(0, 250))
+```
+
+And we still have the 6 outliers. The 3 colonies where starting worker number was large making the predictions outstrip the reality and the 3 colonies where the large numbers of males produced can't be predicted by the model.
+
+```{r}
+summary(M_ZINB)
+```
+
+________________________
+
+Attempt the nuclear option.
+
+Remove col_34 (large worker number), col_216 (large_worker_number), col_198 (male_num = 224,flup+WA combo that is causing 134 and 140 to be overestimated), col_76 (male_num > 190), col_124 (male_num > 190). 
+
+Start in new markdown.
+
+LRTest
+
+```{r}
+M1 = logLik(M3_TMB)
+M2 = logLik(M3_TMB_poisson)
+d <- 2 * (M1 - M2)
+pval <- 0.5 * pchisq(as.numeric(d), df = 1,
+lower.tail = FALSE)
+
+pval
+```
+

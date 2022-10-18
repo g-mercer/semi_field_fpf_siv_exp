@@ -6,6 +6,7 @@ colony_number,block,treatment,triad,campus_location,rearing_location,number_of_w
 117,1,flup,3,BA,porkka,14,7,28,40,22,35,N
 8,1,control,2,WA,porkka,17,11,49,61,1,42,N
 185,1,control,3,BA,porkka,8,9,27,35,27,77,N
+57,1,flup,1,M,porkka,22,13,42,47,15,105,N
 12,1,sivanto,3,BA,porkka,11,11,56,61,1,63,N
 171,1,sivanto,4,BG,porkka,6,9,30,35,27,42,N
 177,1,flup,4,BG,porkka,6,9,34,35,27,84,N
@@ -38,11 +39,13 @@ colony_number,block,treatment,triad,campus_location,rearing_location,number_of_w
 39,4,control,13,WA,porkka,20,27,68,70,9,63,Y
 79,4,control,15,BG,porkka,10,17,58,60,19,49,N
 84,4,sivanto,15,BG,porkka,7,17,58,60,19,42,N
+134,4,flup,13,WA,porkka,15,7,55,57,22,84,N
 163,4,sivanto,14,BA,porkka,10,9,50,52,27,56,N
 176,4,sivanto,16,M,porkka,5,9,50,52,27,56,N
 194,4,flup,14,BA,porkka,16,11,47,49,30,49,Y
 214,4,control,16,M,porkka,8,24,47,49,30,70,N
 248,4,control,14,BA,bee_room,8,20,42,44,35,63,N
+237,4,flup,15,BG,bee_room,9,20,42,44,35,77,N
 229,4,flup,16,M,bee_room,8,20,42,44,35,63,Y
 75,5,control,20,BG,porkka,8,17,58,60,19,63,N
 118,5,control,18,WA,porkka,13,7,55,57,22,63,N
@@ -52,6 +55,7 @@ colony_number,block,treatment,triad,campus_location,rearing_location,number_of_w
 216,5,control,17,M,porkka,23,6,47,49,30,70,Y
 250,5,sivanto,20,BG,bee_room,9,20,42,44,35,70,N
 314,5,sivanto,17,M,bee_room,23,6,40,42,37,70,N
+315,5,flup,20,BG,bee_room,7,11,40,42,37,77,Y
 264,5,sivanto,18,WA,bee_room,15,12,41,43,36,63,N
 277,5,control,19,BA,bee_room,11,18,40,42,37,70,N
 300,5,flup,19,BA,bee_room,11,11,40,42,37,63,Y

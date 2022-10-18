@@ -1,0 +1,1738 @@
+---
+title: "Reproductive Number"
+author: "Guy Mercer"
+date: "13/07/2022"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+Import
+
+```{r}
+male_num <- read.csv("input/total_male_number.csv")
+```
+
+Remove colony 57 as male number was not calculated (killed the queen by
+mistake so excluded).
+
+```{r}
+male_num <- male_num [male_num$colony_number != "57",]
+```
+
+Check all the variables are in the right class.
+
+```{r}
+library(tidyverse)
+
+class_check <- tibble()
+
+for (i in 1:ncol(male_num)) {
+  
+  class <- class(male_num [, i])
+  
+  class_check [i, 1] <- class
+  
+  class_check [i, 2] <- colnames(male_num [i])
+}
+
+# they are not all in the correct class. Swap integer to numeric and factor where suitable.
+male_num$colony_number <- as.factor(male_num$colony_number)
+male_num$total_reproductive_output <- as.numeric(male_num$total_reproductive_output)
+male_num$total_male_number <- as.numeric(male_num$total_male_number)
+male_num$block <- as.factor(male_num$block)
+male_num$triad <- as.factor(male_num$triad)
+male_num$number_of_workers_at_exposure_start <- as.numeric(male_num$number_of_workers_at_exposure_start)
+male_num$time_to_egg_laying <- as.numeric(male_num$time_to_egg_laying)
+male_num$time_to_6_workers <- as.numeric(male_num$time_to_6_workers)
+male_num$time_to_exposure_start <- as.numeric(male_num$time_to_exposure_start)
+male_num$queen_capture_day <- as.numeric(male_num$queen_capture_day)
+male_num$queen_survival_days <- as.numeric(male_num$queen_survival_days)
+```
+
+Data Exploration
+
+Look for outliers in the response and explanatory variables to determine
+if any points may be removed or transformations performed.
+
+Sort out the cleveland dotplot encoding.
+
+```{r}
+# for a cleveland dotplot to work treatment has to be coded 1-3. 
+male_num$clevelandcode <- 0 
+
+for (i in 1:nrow(male_num)) {
+  
+  if (male_num$treatment [i] == "control") {
+    
+    male_num$clevelandcode [i] <- 1
+    
+  }
+  
+  if (male_num$treatment [i] == "flup") {
+    
+    male_num$clevelandcode [i] <- 2
+    
+    }
+  
+  if (male_num$treatment [i] == "sivanto") {
+    
+    male_num$clevelandcode [i] <- 3
+    
+    }
+  
+}
+
+# should be numeric already anyway
+male_num$clevelandcode <- as.numeric(male_num$clevelandcode)
+```
+
+Produce some cleveland dotplots
+
+```{r}
+op <- par(mfrow = c(4, 2), mar = c(3, 3, 3, 1))
+
+dotchart(male_num$total_male_number, main = "Male Number", group = male_num$clevelandcode)
+plot(0, 0, type = "n", axes = FALSE)
+dotchart(male_num$number_of_workers_at_exposure_start, main = "Workers At Start", group = male_num$clevelandcode)
+dotchart(male_num$time_to_egg_laying, main = "TTEL", group = male_num$clevelandcode)
+dotchart(male_num$time_to_6_workers, main = "TT6W", group = male_num$clevelandcode)
+dotchart(male_num$time_to_exposure_start, main = "TTES", group = male_num$clevelandcode)
+dotchart(male_num$queen_capture_day, main = "Queen Capture Day", group = male_num$clevelandcode)
+dotchart(male_num$queen_survival_days, main = "Queen Survival", group = male_num$clevelandcode)
+
+par(op)
+```
+
+I am not sure what degree of isolation constitutes an outlier. Is
+workers at start = 28 an outlier? What about the three colonies with
+male number around 200? For TT6W and TTES there are two and three
+points, respectively, which appear to be isolated? If any of these cases
+are outliers they are not obvious (all data between 1-100 then one
+observation of 1000). For this reason leave them in for now.
+
+```{r}
+# sources the functions required.
+source("~/local_package_source/HighstatLibV10.R")
+
+Z <- cbind(male_num$total_male_number, male_num$number_of_workers_at_exposure_start,
+           male_num$time_to_egg_laying, male_num$time_to_6_workers, male_num$time_to_exposure_start,
+           male_num$queen_capture_day, male_num$queen_survival_days)
+
+colnames(Z) <- c("male_num", "workers_at_start", "TTEL",
+"TT6W", "TTES", "QCD", "queen_survival")
+
+pairs(Z, lower.panel = panel.smooth2,
+upper.panel = panel.cor, diag.panel = panel.hist)
+```
+
+Two main observations here. The first, and easiest to explain, is there
+was a high correlation between time to 6 workers and time to exposure
+start. As TT6W determined TTES this is no surprise. The second
+observation is, TTES was negatively correlated with queen capture day.
+This may appear interesting on first inspection but is not. At TTES,
+worker number was different for each colony. TTES was smaller for queens
+caught later in the experiment because these queens likely went on to
+form colonies with around 6 workers. For queens caught early in the
+experiment (low QCD), their TTES was high as some colonies were ready
+before the whole batch was, which inflated their TTES. Perform VIF.
+
+Let's look at variance inflation values.
+
+p387 Zuur,
+
+"To find a set of explanatory variables that does not contain
+collinearity, we removed one variable at a time, recalculated the VIF
+values, and repeated this process until all VIF values were smaller than
+3."
+
+I'm guessing that you remove the highest gvif first, then repeat.
+
+```{r}
+corvif(Z[, -1])
+
+# remove TTES
+corvif(Z[, c(-1, -5)])
+
+# everything < 3
+```
+
+Removed TTES and everything dropped below 3. So my starting set of
+explanatory variables is everything apart from TTES. Think about
+biologically relevant/interpretable interactions to include.
+
+Other points to consider are the relationship between male number and
+workers at start may not be linear. The same could be said for male
+number and TT6W. Could they be described by exponential (comes with
+poisson GLM approach)?
+
+Before moving on plot boxplots of the factor variables against male
+number to see if any appear to have an effect.
+
+```{r}
+boxplot(total_male_number ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Male Number Vs Treatment", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(total_male_number ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Boxplot of Male Number Vs Block", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(total_male_number ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Boxplot of Male Number Vs Triad", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(total_male_number ~ campus_location,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Boxplot of Male Number Vs Campus Location", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(total_male_number ~ rearing_location,
+        varwidth = TRUE, xlab = "Rearing Location",
+        main = "Boxplot of Male Number Vs Rearing Location", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(total_male_number ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Boxplot of Male Number Vs Wax Moth", 
+        ylab = "Number of males", data = male_num)
+```
+
+From the boxplots above triad nested within block looks important, so a
+random intercept must be considered. Also, campus_location (meadow is
+higher) may be significant.
+
+Male number is count data. Realm of poisson and negative binomial
+distributions. First check for overdispersion. Fit a poisson and then
+deviance/df. If around 1 fine. If \> 1 overdispersed (variance greater
+than mean). Is this true overdispersion or apparent overdispersion?
+Apparent overdispersion can be introduced by omitting variables or
+interaction terms. If overdispersion apparent try and think about some
+more biologically relevant interaction terms first. After this the first
+solution is a quasi-poisson GLM, followed by NB GLM. For quasi-poisson
+GLM, φ \> 1.5 then some action is required. If φ \> 15-20 then consider
+NB GLM. For model validation use deviance residuals, although there is
+little difference to pearson residuals.
+
+We need to take the residuals of choice (e.g. deviance) and plot them
+against (i) the fitted values, (ii) each explanatory variable in the
+model, (iii) each explanatory variable not in the model (the ones not
+used in the model, or the ones dropped during the model selection
+procedure), (iv) against time, and (v) against spatial coordinates, if
+relevant. We do not want to see any patterns in these graphs. If we do,
+then there is something wrong, and we need to work out what it is. If
+there are patterns in the graph with residuals against omitted
+explanatory variables, then the solution is simple; include them in the
+model. If there are patterns in the graph showing residuals against each
+explanatory variable used in the model, then either include quadratic
+terms, use GAM, or conclude that there is violation of independence. If
+you plot the residuals against time or spatial coordinates, and there
+are patterns, conclude you are violating the assumption of independence.
+Patterns in spread (detected by plotting residuals against fitted
+values) may indicate overdispersion or use of the wrong mean-variance
+relationship (e.g. wrong choice of distribution). Violation of
+independence nearly always means that an important covariate was
+excluded from the model. If you did not measure it, then if possible, go
+back into the field and measure it now. That is assuming you have any
+idea of what the missing covariate might be! If this is not an available
+solution, then curse yourself for a poor experimental design and hope
+that applying a generalised linear mixed model or generalised estimation
+equation (GEE) will bale you out. See Chapters 12 and 13.
+
+If you fit a NB model and there is still overdispersion, an NB-P model
+can be applied (would have to find appropriate package to deploy this).
+Or check Table 5.1 in Hilbe 2007. For NB models we also get its standard
+error, but care is needed with its use as the interval is not symmetric
+and we are testing on the boundary.
+
+Increase complexity. I know that i have triad nested within block so in
+the end I will probably require this included as a random effect
+(account for dependence structure). Before this i need to decide between
+poisson, quasi-poisson and NB approach.
+
+Start off with my beyond optimal model. Which interaction terms may be
+of interest? Remember TTES can't be included due to collinearity.
+
+male_number \~ treatment + campus_location + rearing_location +
+wax_moth + workers_at_start + TTEL + TT6W + QCD +
+treatment:workers_at_start + treatment:TTEL + treatment:TT6W +
+treatment:campus_location + treatment:wax_moth +
+campus_location:workers_at_start
+
+Two way interactions with treatment are the most biologically relevant.
+Treatment (siv) may have a larger effect if there were less workers at
+exposure start, treatment effects may be greater if TTEL and TT6W were
+larger (exacerbating issues in already less fit queens), treatment may
+interact with campus_locations that offer poorer floral resources,
+treatment could act synergistically with wax_moth infestations. Finally,
+if the workers_at_start was small, colonies could have been faced a
+greater impact from poor floral resources (campus_location)
+
+Start by fitting a poisson model with this set of variables and
+interactions
+
+```{r}
+# rename variables first to make life easier
+colnames(male_num) <- c("col_num", "repro_num", "male_num", "block", "treatment", "triad",
+                        "camp_loc", "rear_loc", "workers", "TTEL", "TT6W", "TTES", "QCD",
+                        "wax_moth", "queen_surv", "clevelandcode")
+
+M1 <- glm(male_num ~ treatment + camp_loc + rear_loc + wax_moth + workers + TTEL + TT6W + QCD + treatment:workers + treatment:TTEL + treatment:TT6W +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers, family = poisson, data = male_num)
+
+summary(M1)
+```
+
+1017.9/30 = 33.93. Extremely overdispersed. Here is the first issue.
+This could be real or apparent overdispersion.
+
+"Apparent overdispersion is due to missing covariates or interactions,
+outliers in the response variable, non-linear effects of covariates
+entered as linear terms in the systematic part of the model, and choice
+of the wrong link function. These are mainly model misspecifications."
+
+Apparent Overdispersion Causes
+
+1 - Incorrect predictor scale 2 - Outliers in response variable 3 -
+Missing interaction term 4 - Incorrectly specified link function 5 -
+Missing predictor variable
+
+First, I tried quasi-poisson and then NB. Using the initial dataset, NB
+was still overdispersed 71.1/30 = 2.37 (M3). Before progressing to more
+complex solutions involving more exotic flavours/extensions of NB I have
+tried to solve any sources of apparent overdispersion below (incorrect
+predictor scale and response variable outliers). If I am missing a
+predictor then I can't do much as I have included all the predictors I
+can. If I am missing an important interaction term then I am not sure of
+a systematic way to approach this problem. Testing the link will be
+challenging as it involves techniques I am not familiar with.
+
+I have not included all interactions because that would be ridiculous.
+Maybe there is an important interaction I am missing?
+
+1 - Maybe the scale of the some of predictors is incorrect? Take the
+square root of workers and TT6W? These two predictor variables displayed
+the greatest skew.
+
+```{r}
+male_num$sqrtworkers <- sqrt(male_num$workers)
+
+male_num$sqrtTT6W <- sqrt(male_num$TT6W)
+
+# refit the poisson model using these converted explanatory variables. 
+M1sqrt <- glm(male_num ~ treatment + camp_loc + rear_loc + wax_moth + sqrtworkers + TTEL + sqrtTT6W + QCD + treatment:sqrtworkers + treatment:TTEL +
+                treatment:sqrtTT6W + treatment:camp_loc + treatment:wax_moth + camp_loc:sqrtworkers, family = poisson, data = male_num)
+
+summary(M1sqrt)
+```
+
+Pearson dispersion (measure of overdispersion) went from to 33.93 to
+33.39. Not the solution.
+
+2 - Outliers in the response variable
+
+```{r}
+male_num_no_outliers <- male_num [male_num$male_num < 160, ]
+
+# refit the poisson model using these converted explanatory variables. 
+M1_no_outliers <- glm(male_num ~ treatment + camp_loc + rear_loc + wax_moth + sqrtworkers + TTEL + sqrtTT6W + QCD + treatment:sqrtworkers + treatment:TTEL +
+                treatment:sqrtTT6W + treatment:camp_loc + treatment:wax_moth + camp_loc:sqrtworkers, family = poisson, data = male_num_no_outliers)
+
+summary(M1_no_outliers)
+```
+
+Pearson dispersion went from 33.93 to 30.23. No real improvement
+
+3 - Missing Interaction Term. There are many omitted interaction terms.
+How to select the correct missing one, if this is the source of
+overdispersion. Try this later
+
+4 - Incorrect link function. This code was copied from p156 of Hilbe
+2007, Tukey-Pregibon link test.
+
+```{r}
+poitp <- glm(male_num ~ treatment + camp_loc + rear_loc + wax_moth + workers + TTEL + TT6W + QCD + treatment:workers + treatment:TTEL + treatment:TT6W +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers, family = poisson, data = male_num)
+
+hat <-hatvalues(poitp)
+hat2 <- hat*hat
+poy12 <- glm(male_num$male_num ~ hat + hat2, family=poisson)
+summary(poy12)
+confint(poy12)
+```
+
+This indicates that I have the wrong link function???
+
+Try quasi-poisson but I doubt it will solve the issue.
+
+```{r}
+M2 <- glm(male_num ~ treatment + camp_loc + rear_loc + wax_moth + workers + TTEL + TT6W + QCD + treatment:workers + treatment:TTEL + treatment:TT6W +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers, family = quasipoisson, data = male_num)
+
+summary(M2)
+```
+
+Dispersion parameter is \> 20. Therefore, consider alternative
+approaches, such as NB.
+
+```{r}
+library(MASS)
+
+M3 <- glm.nb(male_num ~ treatment + camp_loc + rear_loc + wax_moth + workers + TTEL + TT6W + QCD + treatment:workers + treatment:TTEL + treatment:TT6W +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers, link = "log", data = male_num)
+
+summary(M3)
+```
+
+NB model is still overdispersed (71.1/30 = 2.37) (deviance dispersion
+statistic). What about pearson dispersion statistic
+
+```{r}
+dispfun <- function(m) {
+    r <- residuals(m,type="pearson")
+    n <- df.residual(m)
+    dsq <- sum(r^2)
+    c(dsq=dsq,n=n,disp=dsq/n)
+}
+
+sapply(list(nb2=M3),dispfun)
+```
+
+Pearson dispersion statistic give 1.1 so it is not overdispersed.
+
+Refit the NB model with glmmTMB
+
+```{r}
+library(glmmTMB)
+
+M3_TMB <- glmmTMB(male_num ~ treatment + camp_loc + rear_loc + wax_moth + workers + TTEL + TT6W + QCD + treatment:workers + treatment:TTEL + treatment:TT6W +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers,
+              data = male_num,
+              family = "nbinom2")
+
+summary(M3_TMB)
+
+M3_TMB_nbinom1 <- update(M3_TMB,family=nbinom1)
+M3_TMB_poisson <- update(M3_TMB,family=poisson)
+
+sapply(list(pois=M3_TMB_poisson,nb2=M3_TMB,nb1=M3_TMB_nbinom1),dispfun)
+```
+
+For nb2 the dispersion statistic is now 1.1. The method above is from
+[glmmTMB github] (<https://github.com/glmmTMB/glmmTMB/issues/224>) and
+uses pearson residuals not deviance residuals. From Zuur,
+
+Pearson Residuals - "For this, each residual is divided by the square
+root of the variance. The name 'Pearson' (for a Poisson GLM) is because
+squaring and summing all the Pearson residuals gives you the familiar
+Pearson Chi-square goodness of fit criteria."
+
+Above this is what we have done, Pearson Chi-square goodness of fit
+criteria, then divided it by the residual degrees of freedom.
+
+In Hilbe 2009, "Pearson dispersion statistic, defined as the Pearson
+statistic divided by the model degrees of freedom"
+
+In Hilbe (page 88), it is also justified that the pearson dispersion
+statistic is actually better than the deviance dispersion statistic,
+which is prone to bias. Use this from now on.
+
+nb2 and poisson are nested. nb2 certainly seems the best but let's use a
+test (then code is available in future)
+
+```{r}
+llhNB = logLik(M3_TMB)
+llhPoisson = logLik(M3_TMB_poisson)
+d <- 2 * (llhNB - llhPoisson)
+pval <- 0.5 * pchisq(as.numeric(d), df = 1,
+lower.tail = FALSE)
+
+pval
+```
+
+Made some progress. NB(2) model is the best so far (M3_TMB). I have no
+accounted for block and triad. Attempt using glmmTMB.
+
+```{r}
+M4_TMB <- glmmTMB(male_num ~ treatment + camp_loc + rear_loc + wax_moth + workers + TTEL + TT6W + QCD + treatment:workers + treatment:TTEL + treatment:TT6W +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers + (1 | block/triad),
+              data = male_num,
+              family = "nbinom2",
+              REML = TRUE)
+
+summary(M4_TMB)
+```
+
+The variance of the random effect for site is extremely low. This could
+either mean that there is no correlation within a site or that could be
+an artefact of the Laplace approximation used behind glmmTMB() to
+approximate the integrals of the random effects. You could also try
+fitting the same model with the [GLMMadaptive]
+(<https://drizopoulos.github.io/GLMMadaptive/>) package that
+approximates the same integrals with the adaptive Gaussian quadrature
+procedure that can be more accurate.
+
+From [GLMMadaptive Get
+Started](https://drizopoulos.github.io/GLMMadaptive/articles/GLMMadaptive.html)
+
+---
+Estimation
+The package focuses in settings in which the distribution [𝑦𝑖∣𝑏𝑖] is not normal and/or the link function 𝑔(⋅) is not the identity. In these settings, the estimation of the model is complicated by the fact that the marginal log-likelihood function of the observed 𝑦𝑖 cannot be derived analytically. In particular, the log-likelihood function has the form:
+ℓ(𝜃)==∑𝑖=1𝑛log𝑝(𝑦𝑖;𝜃)∑𝑖=1𝑛log∫𝑝(𝑦𝑖∣𝑏𝑖;𝜃)𝑝(𝑏𝑖;𝜃)𝑑𝑏𝑖,
+where 𝜃 denotes the full parameter vector including the fixed effects, the extra potential dispersion/shape parameters 𝜙 and the unique element of the covariance matrix 𝐷, and 𝑝(⋅) denotes a probability density or probability mass function. The integral in the definition of ℓ(𝜃) does not have a closed-form solution, and numerical approximations are required to obtain the maximum likelihood estimates.
+
+In the literature several approaches have been proposed to approximate such integrals, and a nice overview is given in Pinheiro and Chao (2006). A typical approach to approximate these integrals is the Laplace approximation. However, the general consensus has been that in the standard but difficult cases of binary/dichotomous data and count data with small counts and few repeated measurements, the accuracy of this approximation is rather low. Due to this fact, the general consensus is that the gold standard numerical approximation method is the adaptive Gaussian quadrature rule (note: we focus here on maximum likelihood estimation; under the Bayesian paradigm, approaches, such as, MCMC and Hamiltonian Monte Carlo also provide accurate evaluation of the integrals). This is more computationally intensive but also more accurate. This package provides an efficient implementation of the adaptive Gaussian quadrature rule, allowing for multiple correlated random effects (e.g., random intercepts, linear and quadratic random slopes) but currently a single grouping factor (i.e., no nested or crossed random effects designs).
+---
+
+```{r}
+library(GLMMadaptive)
+
+M4_GLMMadap <- mixed_model(fixed = male_num ~ treatment + camp_loc + rear_loc + wax_moth + workers + TTEL + TT6W + QCD + treatment:workers + treatment:TTEL +
+                             treatment:TT6W + treatment:camp_loc + treatment:wax_moth + camp_loc:workers,
+                           random = ~ 1 | block, data = male_num,
+                           family = negative.binomial(),
+                           iter_EM = 0)
+
+summary(M4_GLMMadap)
+```
+
+Error Message:
+
+Error in mixed_fit(y, X, Z, X_zi, Z_zi, id, offset, offset_zi, family, :
+A large coefficient value has been detected during the optimization.
+Please re-scale you covariates and/or try setting the control argument
+'iter_EM = 0'. Alternatively, this may due to a divergence of the
+optimization algorithm, indicating that an overly complex model is
+fitted to the data. For example, this could be caused when including
+random-effects terms (e.g., in the zero-inflated part) that you do not
+need. Otherwise, adjust the 'max_coef_value' control argument.
+
+Therefore, added iter_EM = 0 above
+
+Check the impact of the chosen number of quadrature points to the
+parameters estimates and the log-likelihood value at convergence. First,
+we refit the model with an increasing number of quadrature points. The
+default when the number of random effects is smaller or equal to two is
+11 points. We fit then with 15, and 21 points:
+
+```{r}
+M4_GLMMadap_q11 <- M4_GLMMadap
+M4_GLMMadap_q15 <- update(M4_GLMMadap_q11, nAGQ = 15)
+M4_GLMMadap_q21 <- update(M4_GLMMadap_q11, nAGQ = 21)
+
+models <- list("nAGQ=11" = M4_GLMMadap_q11, "nAGQ=15" = M4_GLMMadap_q15, "nAGQ=21" = M4_GLMMadap_q21)
+```
+
+We now extract from the model the estimated parameter for the fixed
+effects (using function fixef()), for the random effects, and the
+log-likelihood (using function logLik()):
+
+```{r}
+extract <- function (obj) {
+    c(fixef(obj), "var_(Intercept)" = obj$D[1, 1], "logLik" = logLik(obj))
+}
+
+sapply(models, extract)
+```
+
+Unstable
+
+Compare models
+
+```{r}
+anova(M4_GLMMadap, M3)
+```
+
+The random effects component is not significant.
+
+------------------------------------------------------------------------
+
+At that stage I am going to drastically reduce the complexity of my
+starting model. rearing_location is unnecessary. TT6W is not an accurate
+explanatory variable as it is actually TT\>6W. Out of TT6W, TTES and
+TTEL, only TTEL is properly accurate. The workload of queen rearing
+underminned the other two. Therefore, remove them. Furthermore, QCD is
+questionable.
+
+My new beyond optimal model is now:
+
+male_number \~ treatment + campus_location + wax_moth +
+workers_at_start + TTEL + treatment:workers_at_start + treatment:TTEL +
+treatment:campus_location + treatment:wax_moth +
+campus_location:workers_at_start
+
+Start again with a Poisson model. Compare to nbinom1 and nbinom2
+
+```{r}
+M5_pois <- glmmTMB(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers, family = "poisson", data = male_num)
+
+summary(M5_pois)
+
+M5_nbinom1 <- update(M5_pois,family=nbinom1)
+M5_nbinom2 <- update(M5_pois,family=nbinom2)
+
+options(digits=2)
+sapply(list(pois=M5_pois,nb2=M5_nbinom2,nb1=M5_nbinom1),dispfun)
+```
+
+M5_nbinom2 is not overdispersed. Try and add a random effect.
+
+```{r}
+M5_nbinom2_ran <- glmmTMB(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers + (1 | block/triad), family = "nbinom2", data = male_num)
+
+summary(M5_nbinom2_ran)
+```
+
+Random effect variance is tiny again. Try the GLMMadap approach again.
+
+```{r}
+M5_GLMMadap <- mixed_model(fixed = male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL + 
+                             treatment:camp_loc + treatment:wax_moth + camp_loc:workers,
+                           random = ~ 1 | triad, data = male_num,
+                           family = negative.binomial())
+
+summary(M5_GLMMadap)
+```
+
+Check the impact of the chosen number of quadrature points to the
+parameters estimates and the log-likelihood value at convergence. First,
+we refit the model with an increasing number of quadrature points. The
+default when the number of random effects is smaller or equal to two is
+11 points. We fit then with 15, and 21 points:
+
+```{r}
+M5_GLMMadap_q11 <- M5_GLMMadap
+M5_GLMMadap_q15 <- update(M5_GLMMadap_q11, nAGQ = 15)
+M5_GLMMadap_q21 <- update(M5_GLMMadap_q11, nAGQ = 21)
+
+models <- list("nAGQ=11" = M5_GLMMadap_q11, "nAGQ=15" = M5_GLMMadap_q15, "nAGQ=21" = M5_GLMMadap_q21)
+```
+
+We now extract from the model the estimated parameter for the fixed
+effects (using function fixef()), for the random effects, and the
+log-likelihood (using function logLik()):
+
+```{r}
+extract <- function (obj) {
+    c(fixef(obj), "var_(Intercept)" = obj$D[1, 1], "logLik" = logLik(obj))
+}
+
+sapply(models, extract)
+```
+
+Stability much improved. However, going off the variance of the random
+intercept, it does not look like there is much correlation within triad.
+
+Once again compare a model with the random component to one without. In
+LMM here REML = TRUE. This setting is not available for either model. I
+could not find an example of Zuur comparing a GLM to a GLMM using a
+likelihood ratio test. Therefore, I am not sure if below is valid.
+
+```{r}
+M5_nbinom2_glmnb <- glm.nb(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers, link = "log", data = male_num)
+
+anova(M5_GLMMadap, M5_nbinom2_glmnb)
+```
+
+Even dividing this by two to perform testing the boundary correction (if
+this is indeed valid), this is not significant. Therefore, conclude that
+observations within triad are not correlated
+
+```{r}
+l0 = logLik(M5_nbinom2_glmnb)
+l1 = logLik(M5_GLMMadap)
+d <- 2 * (l0 - l1)
+pval <- 0.5 * pchisq(as.numeric(d), df = 1,
+lower.tail = FALSE)
+
+pval
+```
+
+Below shows the output of glm.nb and glmmTMB are different by one degree
+of freedom. I think this is because for M5_nbinom2_glmnb the init.theta
+is provided and therefore doesn't have to be estimated (somehow). Use
+TMB as this makes more intuitive sense.
+
+Centre starting worker number to aid intercept interpretation.
+
+```{r}
+male_num$workers <- male_num$workers - mean(male_num$workers)
+```
+
+```{r}
+M5_nbinom2_glmnb <- glm.nb(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers, link = "log", data = male_num)
+
+M5_nbinom2 <- glmmTMB(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers, family = "nbinom2", data = male_num)
+
+sapply(list(nb2=M5_nbinom2_glmnb, nb2a=M5_nbinom2),dispfun)
+
+summary(M5_nbinom2_glmnb)
+
+summary(M5_nbinom2)
+```
+
+Redefine beyond optimal model.
+
+```{r}
+bey_opt_mod <- M5_nbinom2
+
+summary(bey_opt_mod)
+
+sapply(list(nb2=bey_opt_mod),dispfun)
+```
+
+Model Selection (drop1 approach)
+
+```{r}
+drop1(bey_opt_mod, test = "Chi")
+
+# drop treatment:TTEL
+bey_opt_mod_a <- update(bey_opt_mod, .~. -treatment:TTEL)
+drop1(bey_opt_mod_a, test = "Chi")
+
+# drop treatment:wax_moth
+bey_opt_mod_b <- update(bey_opt_mod_a, .~. -treatment:wax_moth)
+drop1(bey_opt_mod_b, test = "Chi")
+
+# drop wax_moth
+bey_opt_mod_c <- update(bey_opt_mod_b, .~. -wax_moth)
+drop1(bey_opt_mod_c, test = "Chi")
+
+# drop camp_loc:workers
+bey_opt_mod_d <- update(bey_opt_mod_c, .~. -camp_loc:workers)
+drop1(bey_opt_mod_d, test = "Chi")
+
+# drop treatment:workers
+bey_opt_mod_e <- update(bey_opt_mod_d, .~. -treatment:workers)
+drop1(bey_opt_mod_e, test = "Chi")
+
+# drop TTEL
+bey_opt_mod_f <- update(bey_opt_mod_e, .~. -TTEL)
+drop1(bey_opt_mod_f, test = "Chi")
+
+# drop treatment:camp_loc
+bey_opt_mod_g <- update(bey_opt_mod_f, .~. -treatment:camp_loc)
+drop1(bey_opt_mod_g, test = "Chi")
+
+# drop camp_loc
+bey_opt_mod_h <- update(bey_opt_mod_g, .~. -camp_loc)
+drop1(bey_opt_mod_h, test = "Chi")
+
+# drop treatment
+bey_opt_mod_i <- update(bey_opt_mod_h, .~. -treatment)
+drop1(bey_opt_mod_i, test = "Chi")
+```
+
+As these p values are approximate and 0.024 is so close to 0.05, and a
+drop1 sequence involves multiple hypothesis testing, number of workers
+at exposure start can also be removed from the model. This leaves me
+with an INTERCEPT ONLY MODEL.
+
+I could leave worker number in the model, present this, then add
+treatment back in with some confidence intervals for visualisation.
+Could also use the drop1 values for p values. .
+
+Remember to exp(parameter estimates) for true values.
+
+Relevel to have a look at if flup is signif diff to sivanto. Still p \>
+0.05
+
+```{r}
+male_num$treatment <- relevel(male_num$treatment, ref = "flup")
+
+bey_opt_mod_h <- update(bey_opt_mod_g, .~. -camp_loc)
+
+summary(bey_opt_mod_h)
+
+male_num$treatment <- relevel(male_num$treatment, ref = "control")
+```
+
+Model Validation for model with workers only
+
+```{r}
+worker_only_mod <- glm.nb(male_num ~ workers, link = "log", data = male_num)
+
+summary(worker_only_mod)
+
+op <- par(mfrow = c(2, 2))
+
+plot(worker_only_mod)
+
+par(op)
+
+```
+
+In this case, there are no observations with a Cook distance larger than
+1, which is the threshold value upon one should take further action
+(Fox, 2002). The outliers (4,13 and 35) are the colonies with zero
+males. Maybe I do need an inflated model then?
+
+Now plot against explanatory variables left in the model and those
+dropped during the model selection process.
+
+```{r}
+E_worker_mod <- resid(worker_only_mod , type = "pearson")
+
+mu <- predict(worker_only_mod, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_worker_mod, main = "Pearson residuals")
+
+boxplot(E_worker_mod ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Residuals vs Treatment", 
+        ylab = "Residuals", data = male_num)
+
+boxplot(E_worker_mod ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Residuals vs Block", 
+        ylab = "Residuals", data = male_num)
+
+boxplot(E_worker_mod ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Residuals vs Triad", 
+        ylab = "Residuals", data = male_num)
+
+boxplot(E_worker_mod ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Residuals vs Campus Location", 
+        ylab = "Residuals", data = male_num)
+
+boxplot(E_worker_mod ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Residuals vs Wax Moth", 
+        ylab = "Residuals", data = male_num)
+
+plot(x = male_num$TTEL, y = E_worker_mod, main = "Pearson residuals")
+
+plot(x = male_num$workers, y = E_worker_mod, main = "Pearson residuals")
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted Values", xlim = c(0, 300), ylim = c(0, 300))
+
+```
+
+Actual vs Fitted Values shows how poor this model is. 
+
+21 and 25 are the two with pearson residuals >2.
+
+```{r}
+sort(cooks.distance(worker_only_mod))
+```
+
+Their cook's distances of 0.26528 and 0.051215 are the highest of all
+observations but still beneath the threshold of 1. The only residual
+plot with issues is the triad one (triads that clearly don't overlap
+with one). From my experimental design block is more important. Colonies
+within block were treated all the same. They occurred at the same time,
+were treated with the same batches of pesticide solution and were placed
+in the field at the same time so faced the same weather conditions. The
+triad clustering within block does not indicate any difference in
+approach experimentally. Colonies were sorted into triad according to
+size. For block 1, T1 had the three biggest, T2 the next three biggest
+etc. Treatment was assigned evenly with T1 having CFS, T2 = SCF, T3 =
+FSC so the largest colony in a triad didn't always have the same
+treatment group. Which treatment this pattern began on also shifted. For
+block 2 T5 = SCF, T6 = FSC etc.
+
+```{r}
+worker_mod_random <- mixed_model(fixed = male_num ~ workers,
+                           random = ~ 1 | triad, data = male_num,
+                           family = negative.binomial())
+
+summary(worker_mod_random)
+
+E_worker_mod_random <- residuals(worker_mod_random, type ="mean_subject")
+
+boxplot(E_worker_mod_random ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Residuals vs Triad", 
+        ylab = "Residuals", data = male_num)
+```
+
+Comparing the model output of one with triad as a random effect and one
+without, nothing really changes. Apart from the AIC, which increases
+with the addition of a random effect. For this reason, do not include.
+
+```{r}
+summary(worker_only_mod) 
+```
+
+Something to keep in mind is the observations with 0 males. Take col-17
+(4, centred worker number = 4.051). What is µ for this observation.
+
+µ = 4.14 + (4.05\*0.0520) = 4.35
+
+e\^4.35 = 77.5
+
+So µ = 77.5 males but the observation was 0. What is the probability of
+observing 0 for NB distribution with a µ = 77.5 and k = 1.19.
+
+probability of a true zero from a NB distribution = (k/(µ+k))\^k.
+Plugging in the above values gives 0.00681 or 0.68%.
+
+```{r}
+plot(table(male_num$male_num))
+```
+
+Following this line of thought. The mean for male number is 65.288,
+sample size is 59 and k for the previously fitted negative binomial is
+(1.19). Probability of true zeros is therefore 0.00834 \* 59 = 0.492. So
+there are more zeros (x6) than expected.
+
+------------------------------------------------------------------------
+
+At this stage include queen_survival, which I only thought about when I
+was deep into the analysis. I want to include it as a covariate in the
+false zero part of the zinb model.
+
+Go back to my beyond optimal model and fit a ZIP and a ZINB. Use AIC to
+compare, P, NB, ZIP and ZINB.
+
+```{r}
+library(pscl)
+
+# fit a beyond optimal model ZIP
+f1 <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1)
+
+Zip1 <- zeroinfl(f1, dist = "poisson",
+                 link = "logit", data = male_num)
+
+summary(Zip1)
+
+# fit a beyond optimal model ZINB
+
+Zinb1 <- zeroinfl(f1, dist = "negbin",
+                 link = "logit", data = male_num)
+
+summary(Zinb1)
+
+AIC(M5_pois, M5_nbinom2, Zip1, Zinb1)
+```
+
+So the zero-inflated model is actually better (as predicted by that
+estimate of how many zeros should be present vs how many actually are).
+Have a look at the residual plots.
+
+```{r}
+E_Zinb1 <- residuals(Zinb1, type = "pearson")
+
+mu <- predict(Zinb1, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_Zinb1, main = "Pearson residuals")
+abline(0,0)
+
+boxplot(E_Zinb1 ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Residuals vs Treatment", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_Zinb1 ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Residuals vs Block", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_Zinb1 ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Residuals vs Triad", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_Zinb1 ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Residuals vs Campus Location", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_Zinb1 ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Residuals vs Wax Moth", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+plot(x = male_num$TTEL, y = E_Zinb1, main = "Pearson residuals")
+abline(0,0)
+
+plot(x = male_num$workers, y = E_Zinb1, main = "Pearson residuals")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 300), ylim = c(0, 300))
+```
+
+Back to whether I should include a random effect. GLMMadaptive still an
+option.
+
+```{r}
+Zinb1_rand_tri <- mixed_model(fixed = male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL + 
+                             treatment:camp_loc + treatment:wax_moth + camp_loc:workers,
+                          random = ~ 1 | triad, data = male_num,
+                          family = zi.negative.binomial(),
+                          zi_fixed = ~ 1)
+
+summary(Zinb1_rand_tri)
+```
+
+The parameter estimates are very similar and StdDev (Intercept) 0.11581
+for the random effects is very small. I am unsure how to perform a LRT
+appropriately (or compare the residual deviances of the model) but an
+inclusion of triad as a random effect does little to the parameter
+estimates. Therefore, for simplicity remove.
+
+What about if I use block
+
+```{r}
+Zinb1_rand_block <- mixed_model(fixed = male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL + 
+                             treatment:camp_loc + treatment:wax_moth + camp_loc:workers,
+                          random = ~ 1 | block, data = male_num,
+                          family = zi.negative.binomial(),
+                          zi_fixed = ~ 1)
+
+# formula for Zinb1
+# f1 <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+#                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1)
+
+summary(Zinb1)
+
+# paste into terminal as does not display well in chunks
+summary(Zinb1_rand_block)
+```
+
+Block stdev = 0.19. So there is little correlation within block. Some of
+the parameter estimates for the interaction terms do change
+substantially though. It is a judgement call but I am going to remove it
+for simplicity again as the variance is so small.
+
+Would any of the explanatory variables explain the probability of false
+zeros? I don't think so. The interpretation of a false zero in this case
+is challenging. Maybe it is that the queen was already ill when the
+experiment began? So maybe queen survival could explain the probability
+of false zeros, which I have not used as an explanatory variable?
+
+Perform model selection on the beyond optimal model for zinb with
+queen_surv added to the false zero component.
+
+```{r}
+library(lmtest)
+
+# fit a beyond optimal model ZINB with queen_surv
+f2 <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1 + queen_surv)
+Zinb2 <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+```
+
+Round 1
+
+```{r}
+# what can be dropped? 
+
+# from the binomial
+# queen_surv 
+f2a <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1)
+Zinb2a <- zeroinfl(f2a, dist = "negbin",
+                 link = "logit", data = male_num)
+
+lrtest(Zinb2, Zinb2a)
+# from the count
+# camp_loc:workers
+f2b <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth | 1 + queen_surv)
+Zinb2b <- zeroinfl(f2b, dist = "negbin",
+                 link = "logit", data = male_num)
+
+lrtest(Zinb2, Zinb2b)
+# treatment:wax_moth
+f2c <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + camp_loc:workers | 1 + queen_surv)
+Zinb2c <- zeroinfl(f2c, dist = "negbin",
+                 link = "logit", data = male_num)
+
+lrtest(Zinb2, Zinb2c)
+# treatment:camp_loc
+f2d <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                 treatment:wax_moth + camp_loc:workers | 1 + queen_surv)
+Zinb2d <- zeroinfl(f2d, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2, Zinb2d)
+# treatment:TTEL
+f2e <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1 + queen_surv)
+Zinb2e <- zeroinfl(f2e, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2, Zinb2e)
+# treatment:workers
+f2f <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1 + queen_surv)
+Zinb2f <- zeroinfl(f2f, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2, Zinb2f)
+```
+
+treatment:TTEL dropped. Round 2.
+
+```{r}
+# ref
+f2e <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1 + queen_surv)
+Zinb2e <- zeroinfl(f2e, dist = "negbin",
+                 link = "logit", data = male_num)
+
+# drop queen_surv
+f2ea <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1)
+Zinb2ea <- zeroinfl(f2ea, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2e, Zinb2ea)
+
+# drop camp_loc:workers
+f2eb <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + treatment:wax_moth | 1 + queen_surv)
+Zinb2eb <- zeroinfl(f2eb, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2e, Zinb2eb)
+
+# drop treatment:wax_moth
+f2ec <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + camp_loc:workers | 1 + queen_surv)
+Zinb2ec <- zeroinfl(f2ec, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2e, Zinb2ec)
+
+# drop treatment:camp_loc
+f2ed <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                      treatment:wax_moth + camp_loc:workers | 1 + queen_surv)
+Zinb2ed <- zeroinfl(f2ed, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2e, Zinb2ed)
+
+# drop treatment:workers
+f2ee <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1 + queen_surv)
+Zinb2ee <- zeroinfl(f2ee, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2e, Zinb2ee)
+
+# drop TTEL
+f2ef <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + treatment:workers +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1 + queen_surv)
+Zinb2ef <- zeroinfl(f2ef, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2e, Zinb2ef)
+```
+
+Dropped treatment:wax_moth. Round 3.
+
+```{r}
+# ref
+f2ec <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + camp_loc:workers | 1 + queen_surv)
+Zinb2ec <- zeroinfl(f2ec, dist = "negbin",
+                 link = "logit", data = male_num)
+
+# drop queen_surv
+f2eca <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + camp_loc:workers | 1)
+Zinb2eca <- zeroinfl(f2eca, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ec, Zinb2eca)
+
+# drop camp_loc:workers
+f2ecb <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                     treatment:camp_loc | 1 + queen_surv)
+Zinb2ecb <- zeroinfl(f2ecb, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ec, Zinb2ecb)
+
+# drop treatment:camp_loc
+f2ecc <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                      camp_loc:workers | 1 + queen_surv)
+Zinb2ecc <- zeroinfl(f2ecc, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ec, Zinb2ecc)
+
+# drop treatment:workers
+f2ecd <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL +
+                     treatment:camp_loc + camp_loc:workers | 1 + queen_surv)
+Zinb2ecd <- zeroinfl(f2ecd, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ec, Zinb2ecd)
+
+# drop TTEL
+f2ece <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + treatment:workers +
+                     treatment:camp_loc + camp_loc:workers | 1 + queen_surv)
+Zinb2ece <- zeroinfl(f2ece, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ec, Zinb2ece)
+
+# drop wax_moth
+f2ecf <- formula(male_num ~ treatment + camp_loc + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + camp_loc:workers | 1 + queen_surv)
+Zinb2ecf <- zeroinfl(f2ecf, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ec, Zinb2ecf)
+```
+
+Remove wax_moth. Round 4.
+
+```{r}
+# ref
+f2ecf <- formula(male_num ~ treatment + camp_loc + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + camp_loc:workers | 1 + queen_surv)
+Zinb2ecf <- zeroinfl(f2ecf, dist = "negbin",
+                 link = "logit", data = male_num)
+
+# drop queen_surv
+f2ecfa <- formula(male_num ~ treatment + camp_loc + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + camp_loc:workers | 1)
+Zinb2ecfa <- zeroinfl(f2ecfa, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecf, Zinb2ecfa)
+
+# drop camp_loc:workers
+f2ecfb <- formula(male_num ~ treatment + camp_loc + workers + TTEL + treatment:workers +
+                     treatment:camp_loc | 1 + queen_surv)
+Zinb2ecfb <- zeroinfl(f2ecfb, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecf, Zinb2ecfb)
+
+# drop treatment:camp_loc
+f2ecfc <- formula(male_num ~ treatment + camp_loc + workers + TTEL + treatment:workers +
+                     camp_loc:workers | 1 + queen_surv)
+Zinb2ecfc <- zeroinfl(f2ecfc, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecf, Zinb2ecfc)
+# drop treatment:workers
+f2ecfd <- formula(male_num ~ treatment + camp_loc + workers + TTEL +
+                     treatment:camp_loc + camp_loc:workers | 1 + queen_surv)
+Zinb2ecfd <- zeroinfl(f2ecfd, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecf, Zinb2ecfd)
+# drop TTEL
+f2ecfe <- formula(male_num ~ treatment + camp_loc + workers + treatment:workers +
+                     treatment:camp_loc + camp_loc:workers | 1 + queen_surv)
+Zinb2ecfe <- zeroinfl(f2ecfe, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecf, Zinb2ecfe)
+```
+
+0.018 when performing this many rounds of testing isn't great. Also
+these p values are approximate. Therefore, remove treatment:workers.
+Round 5.
+
+```{r}
+# ref
+f2ecfd <- formula(male_num ~ treatment + camp_loc + workers + TTEL +
+                     treatment:camp_loc + camp_loc:workers | 1 + queen_surv)
+Zinb2ecfd <- zeroinfl(f2ecfd, dist = "negbin",
+                 link = "logit", data = male_num)
+
+# remove queen_surv
+f2ecfda <- formula(male_num ~ treatment + camp_loc + workers + TTEL +
+                     treatment:camp_loc + camp_loc:workers | 1)
+Zinb2ecfda <- zeroinfl(f2ecfda, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfd, Zinb2ecfda)
+
+# remove camp_loc:workers
+f2ecfdb <- formula(male_num ~ treatment + camp_loc + workers + TTEL +
+                     treatment:camp_loc | 1 + queen_surv)
+Zinb2ecfdb <- zeroinfl(f2ecfdb, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfd, Zinb2ecfdb)
+
+# remove treatment:camp_loc
+f2ecfdc <- formula(male_num ~ treatment + camp_loc + workers + TTEL +
+                     camp_loc:workers | 1 + queen_surv)
+Zinb2ecfdc <- zeroinfl(f2ecfdc, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfd, Zinb2ecfdc)
+
+# remove TTEL
+f2ecfde <- formula(male_num ~ treatment + camp_loc + workers +
+                     treatment:camp_loc + camp_loc:workers | 1 + queen_surv)
+Zinb2ecfde <- zeroinfl(f2ecfde, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfd, Zinb2ecfde)
+```
+
+remove camp_loc:workers. Round 6.
+
+```{r}
+# ref
+f2ecfdb <- formula(male_num ~ treatment + camp_loc + workers + TTEL + treatment:camp_loc | 1 + queen_surv)
+Zinb2ecfdb <- zeroinfl(f2ecfdb, dist = "negbin",
+                 link = "logit", data = male_num)
+
+# remove queen_surv
+f2ecfdba <- formula(male_num ~ treatment + camp_loc + workers + TTEL + treatment:camp_loc | 1)
+Zinb2ecfdba <- zeroinfl(f2ecfdba, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfdb, Zinb2ecfdba)
+
+# remove treatment:camp_loc
+f2ecfdbb <- formula(male_num ~ treatment + camp_loc + workers + TTEL | 1 + queen_surv)
+Zinb2ecfdbb <- zeroinfl(f2ecfdbb, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfdb, Zinb2ecfdbb)
+
+# remove TTEL
+f2ecfdbc <- formula(male_num ~ treatment + camp_loc + workers + treatment:camp_loc | 1 + queen_surv)
+Zinb2ecfdbc <- zeroinfl(f2ecfdbc, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfdb, Zinb2ecfdbc)
+
+# remove workers 
+f2ecfdbd <- formula(male_num ~ treatment + camp_loc+ TTEL + treatment:camp_loc | 1 + queen_surv)
+Zinb2ecfdbd <- zeroinfl(f2ecfdbd, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfdb, Zinb2ecfdbd)
+
+```
+
+Remove TTEL. Round 7.
+
+```{r}
+# ref
+f2ecfdbc <- formula(male_num ~ treatment + camp_loc + workers + treatment:camp_loc | 1 + queen_surv)
+Zinb2ecfdbc <- zeroinfl(f2ecfdbc, dist = "negbin",
+                 link = "logit", data = male_num)
+
+# remove queen_surv
+f2ecfdbca <- formula(male_num ~ treatment + camp_loc + workers + treatment:camp_loc | 1)
+Zinb2ecfdbca <- zeroinfl(f2ecfdbca, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfdbc, Zinb2ecfdbca)
+
+# remove treatment:camp_loc
+f2ecfdbcb <- formula(male_num ~ treatment + camp_loc + workers | 1 + queen_surv)
+Zinb2ecfdbcb <- zeroinfl(f2ecfdbcb, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfdbc, Zinb2ecfdbcb)
+
+# remove workers
+f2ecfdbcc <- formula(male_num ~ treatment + camp_loc + treatment:camp_loc | 1 + queen_surv)
+Zinb2ecfdbcc <- zeroinfl(f2ecfdbcc, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfdbc, Zinb2ecfdbcc)
+```
+
+Final Model is
+
+```{r}
+summary(Zinb2ecfdbc)
+
+AIC(Zinb2ecfdbc)
+```
+
+stepAIC with glmmTMB
+
+```{r}
+Zinb2_TMB <- glmmTMB(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers,
+              data = male_num,
+              ziformula=~1 + queen_surv,
+              family = "nbinom2")
+
+stepAIC(Zinb2_TMB)
+```
+
+Includes more than manually performing lrtests.
+
+```{r}
+library(lmtest)
+
+# fit a beyond optimal model ZINB with queen_surv
+f2 <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1)
+Zinb2 <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+```
+
+Round 1
+
+```{r}
+# what can be dropped? 
+
+# from the count
+# camp_loc:workers
+f2b <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth | 1)
+Zinb2b <- zeroinfl(f2b, dist = "negbin",
+                 link = "logit", data = male_num)
+
+lrtest(Zinb2, Zinb2b)
+# treatment:wax_moth
+f2c <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + camp_loc:workers | 1)
+Zinb2c <- zeroinfl(f2c, dist = "negbin",
+                 link = "logit", data = male_num)
+
+lrtest(Zinb2, Zinb2c)
+# treatment:camp_loc
+f2d <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                 treatment:wax_moth + camp_loc:workers | 1)
+Zinb2d <- zeroinfl(f2d, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2, Zinb2d)
+# treatment:TTEL
+f2e <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1)
+Zinb2e <- zeroinfl(f2e, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2, Zinb2e)
+# treatment:workers
+f2f <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1)
+Zinb2f <- zeroinfl(f2f, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2, Zinb2f)
+```
+
+treatment:TTEL dropped. Round 2.
+
+```{r}
+# ref
+f2e <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1)
+Zinb2e <- zeroinfl(f2e, dist = "negbin",
+                 link = "logit", data = male_num)
+
+# drop camp_loc:workers
+f2eb <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + treatment:wax_moth | 1)
+Zinb2eb <- zeroinfl(f2eb, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2e, Zinb2eb)
+
+# drop treatment:wax_moth
+f2ec <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + camp_loc:workers | 1)
+Zinb2ec <- zeroinfl(f2ec, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2e, Zinb2ec)
+
+# drop treatment:camp_loc
+f2ed <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                      treatment:wax_moth + camp_loc:workers | 1)
+Zinb2ed <- zeroinfl(f2ed, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2e, Zinb2ed)
+
+# drop treatment:workers
+f2ee <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1)
+Zinb2ee <- zeroinfl(f2ee, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2e, Zinb2ee)
+
+# drop TTEL
+f2ef <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + treatment:workers +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1)
+Zinb2ef <- zeroinfl(f2ef, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2e, Zinb2ef)
+```
+
+Dropped treatment:wax_moth. Round 3.
+
+```{r}
+# ref
+f2ec <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + camp_loc:workers | 1)
+Zinb2ec <- zeroinfl(f2ec, dist = "negbin",
+                 link = "logit", data = male_num)
+
+# drop camp_loc:workers
+f2ecb <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                     treatment:camp_loc | 1)
+Zinb2ecb <- zeroinfl(f2ecb, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ec, Zinb2ecb)
+
+# drop treatment:camp_loc
+f2ecc <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers +
+                      camp_loc:workers | 1)
+Zinb2ecc <- zeroinfl(f2ecc, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ec, Zinb2ecc)
+
+# drop treatment:workers
+f2ecd <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL +
+                     treatment:camp_loc + camp_loc:workers | 1)
+Zinb2ecd <- zeroinfl(f2ecd, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ec, Zinb2ecd)
+
+# drop TTEL
+f2ece <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + treatment:workers +
+                     treatment:camp_loc + camp_loc:workers | 1)
+Zinb2ece <- zeroinfl(f2ece, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ec, Zinb2ece)
+
+# drop wax_moth
+f2ecf <- formula(male_num ~ treatment + camp_loc + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + camp_loc:workers | 1)
+Zinb2ecf <- zeroinfl(f2ecf, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ec, Zinb2ecf)
+```
+
+Remove wax_moth. Round 4.
+
+```{r}
+# ref
+f2ecf <- formula(male_num ~ treatment + camp_loc + workers + TTEL + treatment:workers +
+                     treatment:camp_loc + camp_loc:workers | 1)
+Zinb2ecf <- zeroinfl(f2ecf, dist = "negbin",
+                 link = "logit", data = male_num)
+
+# drop camp_loc:workers
+f2ecfb <- formula(male_num ~ treatment + camp_loc + workers + TTEL + treatment:workers +
+                     treatment:camp_loc | 1)
+Zinb2ecfb <- zeroinfl(f2ecfb, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecf, Zinb2ecfb)
+
+# drop treatment:camp_loc
+f2ecfc <- formula(male_num ~ treatment + camp_loc + workers + TTEL + treatment:workers +
+                     camp_loc:workers | 1)
+Zinb2ecfc <- zeroinfl(f2ecfc, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecf, Zinb2ecfc)
+# drop treatment:workers
+f2ecfd <- formula(male_num ~ treatment + camp_loc + workers + TTEL +
+                     treatment:camp_loc + camp_loc:workers | 1)
+Zinb2ecfd <- zeroinfl(f2ecfd, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecf, Zinb2ecfd)
+# drop TTEL
+f2ecfe <- formula(male_num ~ treatment + camp_loc + workers + treatment:workers +
+                     treatment:camp_loc + camp_loc:workers | 1)
+Zinb2ecfe <- zeroinfl(f2ecfe, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecf, Zinb2ecfe)
+```
+
+0.018 when performing this many rounds of testing isn't great. Also
+these p values are approximate. Therefore, remove treatment:workers.
+Round 5.
+
+```{r}
+# ref
+f2ecfd <- formula(male_num ~ treatment + camp_loc + workers + TTEL +
+                     treatment:camp_loc + camp_loc:workers | 1)
+Zinb2ecfd <- zeroinfl(f2ecfd, dist = "negbin",
+                 link = "logit", data = male_num)
+
+# remove camp_loc:workers
+f2ecfdb <- formula(male_num ~ treatment + camp_loc + workers + TTEL +
+                     treatment:camp_loc | 1)
+Zinb2ecfdb <- zeroinfl(f2ecfdb, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfd, Zinb2ecfdb)
+
+# remove treatment:camp_loc
+f2ecfdc <- formula(male_num ~ treatment + camp_loc + workers + TTEL +
+                     camp_loc:workers | 1)
+Zinb2ecfdc <- zeroinfl(f2ecfdc, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfd, Zinb2ecfdc)
+
+# remove TTEL
+f2ecfde <- formula(male_num ~ treatment + camp_loc + workers +
+                     treatment:camp_loc + camp_loc:workers | 1)
+Zinb2ecfde <- zeroinfl(f2ecfde, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfd, Zinb2ecfde)
+```
+
+remove camp_loc:workers. Round 6.
+
+```{r}
+# ref
+f2ecfdb <- formula(male_num ~ treatment + camp_loc + workers + TTEL + treatment:camp_loc | 1)
+Zinb2ecfdb <- zeroinfl(f2ecfdb, dist = "negbin",
+                 link = "logit", data = male_num)
+
+# remove treatment:camp_loc
+f2ecfdbb <- formula(male_num ~ treatment + camp_loc + workers + TTEL | 1)
+Zinb2ecfdbb <- zeroinfl(f2ecfdbb, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfdb, Zinb2ecfdbb)
+
+# remove TTEL
+f2ecfdbc <- formula(male_num ~ treatment + camp_loc + workers + treatment:camp_loc | 1)
+Zinb2ecfdbc <- zeroinfl(f2ecfdbc, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfdb, Zinb2ecfdbc)
+
+# remove workers 
+f2ecfdbd <- formula(male_num ~ treatment + camp_loc+ TTEL + treatment:camp_loc | 1)
+Zinb2ecfdbd <- zeroinfl(f2ecfdbd, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfdb, Zinb2ecfdbd)
+
+```
+
+Remove TTEL. Round 7.
+
+```{r}
+# ref
+f2ecfdbc <- formula(male_num ~ treatment + camp_loc + workers + treatment:camp_loc | 1)
+Zinb2ecfdbc <- zeroinfl(f2ecfdbc, dist = "negbin",
+                 link = "logit", data = male_num)
+
+# remove treatment:camp_loc
+f2ecfdbcb <- formula(male_num ~ treatment + camp_loc + workers | 1)
+Zinb2ecfdbcb <- zeroinfl(f2ecfdbcb, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfdbc, Zinb2ecfdbcb)
+
+# remove workers
+f2ecfdbcc <- formula(male_num ~ treatment + camp_loc + treatment:camp_loc | 1)
+Zinb2ecfdbcc <- zeroinfl(f2ecfdbcc, dist = "negbin",
+                 link = "logit", data = male_num)
+lrtest(Zinb2ecfdbc, Zinb2ecfdbcc)
+```
+
+The inclusion of queen_surv has no effect on the count component of the
+model.
+
+```{r}
+zero_inf_fin <- zeroinfl(male_num ~ treatment + camp_loc + workers + treatment:camp_loc | 1, dist = "negbin",
+                 link = "logit", data = male_num)
+
+zero_inf_fin_quesurv <- zeroinfl(male_num ~ treatment + camp_loc + workers + treatment:camp_loc | 1 + queen_surv, dist = "negbin",
+                 link = "logit", data = male_num)
+
+summary(zero_inf_fin)
+
+summary(zero_inf_fin_quesurv)
+```
+
+Perform model validation.
+
+```{r}
+E_zero_inf_fin_quesurv <- residuals(zero_inf_fin_quesurv, type = "pearson")
+
+mu <- predict(zero_inf_fin_quesurv, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_zero_inf_fin_quesurv, main = "Pearson residuals")
+abline(0, 0)
+
+boxplot(E_zero_inf_fin_quesurv ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Residuals vs Treatment", 
+        ylab = "Residuals", data = male_num)
+abline(0, 0)
+
+boxplot(E_zero_inf_fin_quesurv ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Residuals vs Block", 
+        ylab = "Residuals", data = male_num)
+abline(0, 0)
+
+boxplot(E_zero_inf_fin_quesurv ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Residuals vs Triad", 
+        ylab = "Residuals", data = male_num)
+abline(0, 0)
+
+boxplot(E_zero_inf_fin_quesurv ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Residuals vs Campus Location", 
+        ylab = "Residuals", data = male_num)
+abline(0, 0)
+
+boxplot(E_zero_inf_fin_quesurv ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Residuals vs Wax Moth", 
+        ylab = "Residuals", data = male_num)
+abline(0, 0)
+
+plot(x = male_num$TTEL, y = E_zero_inf_fin_quesurv, main = "Pearson residuals")
+abline(0, 0)
+
+plot(x = male_num$workers, y = E_zero_inf_fin_quesurv, main = "Pearson residuals")
+abline(0, 0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 300), ylim = c(0, 300))
+```
+
+Plotting the original data vs the fitted data is pretty worrying.
+
+Combine col_num, male_num, µ and starting worker number
+
+```{r}
+µ_actual_comparison <- as.data.frame(cbind(as.numeric(as.character(male_num$col_num)), male_num$workers, male_num$male_num, mu, abs(mu-male_num$male_num)))
+
+colnames(µ_actual_comparison) <- c("col", "workers", "male_num", "mu", "diff")
+# look at the top 5 observations that are a poor fit. Anything similar about them?
+test <- µ_actual_comparison [µ_actual_comparison$diff > 80, ]$col
+
+big_µ <- tibble()
+
+for (i in 1:length(test)) {
+  
+   row <- male_num [male_num$col_num == test [i],]
+   
+   big_µ <- rbind(big_µ, row)
+  
+}
+```
+
+The 5 values with the greatest absolute difference from their actual values were 198, 124, 34, 216 and 140. 
+
+For 198 and 124 the actual values were far higher than the predicted. These colonies did not have high worker numbers to start with so the model did not predict their huge male number. 
+
+For 34 and 216 their predictions were far higher than reality. They also had the two largest starting worker number. It seems like their large starting worker number confused the model. 
+
+For 140:
+
+e^Intercept + flup + WA + flup:WA = 204.7 = µ
+
+E(Y) = µ x (1-π)
+
+π = e^(1.1720+(49x-0.0918)) / 1 + e^(1.1720+(49x-0.0918)) = 0.0347
+
+E(Y) = 204.7 x (1-0.0347) = 197.6
+
+If you remove the interaction term this reduces to 41.5, which is much better. 
+
+What does this all tell me?
+
+That values with large worker number at the beginning confuse the model.
+
+That values with large male number also don't agree with the model. 
+
+At the beginning of this whole process I identified the 3 colonies that could have been outliers with regards to male_number and the workers = 28. I also questioned how much larger did something have to be to become an outlier 
+
+What approach to take now? Should I simply remove the 3 big male_number colonies (198, 76, 124) and the 3 colonies with worker number > 10 in relation to the mean? Or should I sqrt worker number so I only have to remove the 3 big male_number colonies?
+
+
+Generate output (8 lines on the same graph).
+
+I am going to start a new markdown adopting an approach where I perform model building on a dataset with sqrtworkers, then one with sqrtworkers and the three big male number colonies removed, then if this still isn't producing good predictions I'll simply remove the 3 big worker colonies and the 3 big male number colonies. 
+

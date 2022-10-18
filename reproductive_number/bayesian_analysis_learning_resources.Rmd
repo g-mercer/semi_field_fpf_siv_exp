@@ -1,0 +1,90 @@
+---
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+The dataset I aim to analyse once I have read the source material
+
+Import
+
+```{r}
+male_num <- read.csv("input/total_male_number.csv")
+```
+
+Remove colony 57 as male number was not calculated (killed the queen by
+mistake so excluded).
+
+```{r}
+male_num <- male_num [male_num$colony_number != "57",]
+```
+
+Check all the variables are in the right class.
+
+```{r}
+library(tidyverse)
+
+class_check <- tibble()
+
+for (i in 1:ncol(male_num)) {
+  
+  class <- class(male_num [, i])
+  
+  class_check [i, 1] <- class
+  
+  class_check [i, 2] <- colnames(male_num [i])
+}
+
+# they are not all in the correct class. Swap integer to numeric and factor where suitable.
+male_num$colony_number <- as.factor(male_num$colony_number)
+male_num$total_reproductive_output <- as.numeric(male_num$total_reproductive_output)
+male_num$total_male_number <- as.numeric(male_num$total_male_number)
+male_num$block <- as.factor(male_num$block)
+male_num$triad <- as.factor(male_num$triad)
+male_num$number_of_workers_at_exposure_start <- as.numeric(male_num$number_of_workers_at_exposure_start)
+male_num$time_to_egg_laying <- as.numeric(male_num$time_to_egg_laying)
+male_num$time_to_6_workers <- as.numeric(male_num$time_to_6_workers)
+male_num$time_to_exposure_start <- as.numeric(male_num$time_to_exposure_start)
+male_num$queen_capture_day <- as.numeric(male_num$queen_capture_day)
+male_num$queen_survival_days <- as.numeric(male_num$queen_survival_days)
+
+# rename variables first to make life easier
+colnames(male_num) <- c("col_num", "repro_num", "male_num", "block", "treatment", "triad",
+                        "camp_loc", "rear_loc", "workers", "TTEL", "TT6W", "TTES", "QCD",
+                        "wax_moth", "queen_surv")
+```
+
+Resources -
+
+Bayesian Concepts Books/Articles - 
+[Statistical rethinking with brms, ggplot2, and the tidyverse: Second edition - book](https://www.dymocks.com.au/book/statistical-rethinking-by-richard-mcelreath-9780429642319)
+[Statistical rethinking with brms, ggplot2, and the tidyverse: Second edition - YT vids](https://www.youtube.com/playlist?list=PLDcUM9US4XdMROZ57-OIRtIK0aOynbgZN)
+[Bayes Rules Book](https://www.bayesrulesbook.com/about-the-authors.html)
+[Bayesian Data Analysis - Gelman](https://www.waterstones.com/book/bayesian-data-analysis/andrew-gelman/john-b-carlin/9781439840955)
+[Doing Bayesian Analysis](https://sites.google.com/site/doingbayesiandataanalysis/)
+[Bayesian Workflow](https://arxiv.org/abs/2011.01808)
+
+I chose to mainly use Statistical Rethinking and Doing Bayesian Analysis (brms implementation below). 
+
+Bayesian Analysis in R:
+brms:
+[Statistical rethinking with brms, ggplot2, and the tidyverse: Second edition](https://bookdown.org/content/4857/)
+[Doing Bayesian Data Analysis in brms and the tidyverse](https://bookdown.org/content/3686/)
+[Easy Bayes Tutorial](https://m-clark.github.io/easy-bayes/introduction.html)
+[brms vignettes](https://cran.r-project.org/web/packages/brms/vignettes/)
+[Poisson regression and log-linear models (Bayesian)](https://www.flutterbys.com.au/stats/tut/tut10.6b.html)
+[Fitting GAMs with brms](https://fromthebottomoftheheap.net/2018/04/21/fitting-gams-with-brms/)
+[Marginal effects in brms](https://www.andrewheiss.com/blog/2021/11/10/ame-bayes-re-guide/)
+[brms: An R Package for Bayesian Multilevel Models using Stan](chrome-extension://efaidnbmnnnibpcajpcglclefindmkaj/https://cran.r-project.org/web/packages/brms/vignettes/brms_overview.pdf)
+bayesplot:
+[Visual MCMC diagnostics](https://mc-stan.org/bayesplot/articles/visual-mcmc-diagnostics.html)
+[Plotting MCMC draws](https://mc-stan.org/bayesplot/articles/plotting-mcmc-draws.html)
+[Graphical posterior predictive checks](https://mc-stan.org/bayesplot/articles/graphical-ppcs.html)
+other:
+[Accessible Bayes Overview](https://evalf21.classes.andrewheiss.com/resource/bayes/#resources)
+
+Stan:
+[Stan User’s Guide](https://mc-stan.org/docs/2_29/stan-users-guide/index.html)
+[Stan Reference Manual](https://mc-stan.org/docs/2_29/reference-manual/index.html#overview)
+[Runtime warnings and convergence problems](https://mc-stan.org/misc/warnings.html#divergent-transitions-after-warmup)

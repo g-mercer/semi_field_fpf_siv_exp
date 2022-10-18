@@ -20,9 +20,7 @@ From this csv I need to calculate the number of days from capture to
 
 a)  egg laying
 
-b)  
-
-    > = 6 workers
+b)  > = 6 workers
 
 c)  exposure start
 
@@ -146,7 +144,7 @@ explanatory_variables_function <- function(queen_rearing, batch_info_csv) {
   
   batch_info_csv <- batch_info_csv[!apply(is.na(batch_info_csv) | batch_info_csv == "", 1, all),]
   
-  # remove blank/NA colums
+  # remove blank/NA columns
   batch_info_csv <- batch_info_csv [, !apply(is.na(batch_info_csv), 2, all)]
   
   # remove lat and long
@@ -187,7 +185,7 @@ The next task is to create the col_survival_days and queen_survival_days variabl
 
 ```{r}
 # import
-weekly_census_data <- read.csv("./input/weekly_census_data_2022_07_22.csv")
+weekly_census_data <- read.csv("./input/weekly_census_data.csv")
 
 # remove rows only containing blank cells and n/a
 weekly_census_data <- weekly_census_data[!apply(is.na(weekly_census_data) | weekly_census_data == "", 1, all),]
@@ -369,6 +367,12 @@ queen_survival_days_df <- wax_moth_variable_function(weekly_census_data = weekly
 total_reproductive_output_df <- wax_moth_variable_function(weekly_census_data = weekly_census_data, 
                                                            survival_df = total_reproductive_output_df)
 
+```
+
+Add queen survival time to total_reproductive_output
+
+```{r}
+total_reproductive_output_df <- col_name_df_combiner_function(dataframe_1 = total_reproductive_output_df, dataframe_2 = queen_survival_days_df)
 ```
 
 Tackle the forage/insecticide consumption response variables. As I have only have 6 time points sum the consumption.

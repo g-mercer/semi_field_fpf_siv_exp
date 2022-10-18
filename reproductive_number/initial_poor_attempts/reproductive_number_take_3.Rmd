@@ -1,0 +1,805 @@
+---
+title: "Reproductive Number Take 3"
+author: "Guy Mercer"
+date: '2022-09-12'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+Import
+
+```{r}
+male_num <- read.csv("input/total_male_number.csv")
+```
+
+Remove colony 57 as male number was not calculated (killed the queen by
+mistake so excluded).
+
+```{r}
+male_num <- male_num [male_num$colony_number != "57",]
+```
+
+Check all the variables are in the right class.
+
+```{r}
+library(tidyverse)
+
+class_check <- tibble()
+
+for (i in 1:ncol(male_num)) {
+  
+  class <- class(male_num [, i])
+  
+  class_check [i, 1] <- class
+  
+  class_check [i, 2] <- colnames(male_num [i])
+}
+
+# they are not all in the correct class. Swap integer to numeric and factor where suitable.
+male_num$colony_number <- as.factor(male_num$colony_number)
+male_num$total_reproductive_output <- as.numeric(male_num$total_reproductive_output)
+male_num$total_male_number <- as.numeric(male_num$total_male_number)
+male_num$block <- as.factor(male_num$block)
+male_num$triad <- as.factor(male_num$triad)
+male_num$number_of_workers_at_exposure_start <- as.numeric(male_num$number_of_workers_at_exposure_start)
+male_num$time_to_egg_laying <- as.numeric(male_num$time_to_egg_laying)
+male_num$time_to_6_workers <- as.numeric(male_num$time_to_6_workers)
+male_num$time_to_exposure_start <- as.numeric(male_num$time_to_exposure_start)
+male_num$queen_capture_day <- as.numeric(male_num$queen_capture_day)
+male_num$queen_survival_days <- as.numeric(male_num$queen_survival_days)
+
+# rename variables first to make life easier
+colnames(male_num) <- c("col_num", "repro_num", "male_num", "block", "treatment", "triad",
+                        "camp_loc", "rear_loc", "workers", "TTEL", "TT6W", "TTES", "QCD",
+                        "wax_moth", "queen_surv")
+```
+
+Look for outliers in the response and explanatory variables to determine
+if any points may be removed or transformations performed.
+
+Sort out the cleveland dotplot encoding.
+
+```{r}
+# for a cleveland dotplot to work treatment has to be coded 1-3. 
+male_num$clevelandcode <- 0 
+
+for (i in 1:nrow(male_num)) {
+  
+  if (male_num$treatment [i] == "control") {
+    
+    male_num$clevelandcode [i] <- 1
+    
+  }
+  
+  if (male_num$treatment [i] == "flup") {
+    
+    male_num$clevelandcode [i] <- 2
+    
+    }
+  
+  if (male_num$treatment [i] == "sivanto") {
+    
+    male_num$clevelandcode [i] <- 3
+    
+    }
+  
+}
+
+# should be numeric already anyway
+male_num$clevelandcode <- as.numeric(male_num$clevelandcode)
+```
+
+Produce some cleveland dotplots
+
+```{r}
+op <- par(mfrow = c(2, 2), mar = c(3, 3, 3, 1))
+
+dotchart(male_num$male_num, main = "Male Number", group = male_num$clevelandcode)
+dotchart(male_num$workers, main = "Workers At Start", group = male_num$clevelandcode)
+dotchart(male_num$TTEL, main = "TTEL", group = male_num$clevelandcode)
+dotchart(male_num$queen_surv, main = "Queen Survival", group = male_num$clevelandcode)
+
+par(op)
+```
+
+Remove TT6W and TTES as TT6W is inaccurate and TTES is unsuitable as different numbers of workers were present for each colony at this timepoint. For TTEL this represents the same state for each colony so could be indicative of underlying queen fitness. Also remove QCD as I can't see how it would have any predictive power and overcomplicates my beyond optimal model. Remove rearing location as this also complicates the model and had no predictive power during my initial modelling attempt
+
+```{r}
+male_num <- male_num [, colnames(male_num) != "TT6W"]
+male_num <- male_num [, colnames(male_num) != "TTES"]
+male_num <- male_num [, colnames(male_num) != "QCD"]
+male_num <- male_num [, colnames(male_num) != "rear_loc"]
+```
+
+```{r}
+# sources the functions required.
+source("~/local_package_source/HighstatLibV10.R")
+
+Z <- cbind(male_num$male_num, male_num$workers, male_num$TTEL, male_num$queen_surv)
+
+colnames(Z) <- c("male_num", "workers", "TTEL", "queen_surv")
+
+pairs(Z, lower.panel = panel.smooth2,
+upper.panel = panel.cor, diag.panel = panel.hist)
+```
+
+```{r}
+corvif(Z[, -1])
+
+# everything < 3
+```
+
+No collinearity by looking pairplots and VIF values. Pairplot of workers vs male_num suggests there could be a relationship.
+
+Have a look at each categorical variable vs male number
+
+```{r}
+boxplot(male_num ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Male Number Vs Treatment", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Boxplot of Male Number Vs Block", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Boxplot of Male Number Vs Triad", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Boxplot of Male Number Vs Campus Location", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Boxplot of Male Number Vs Wax Moth", 
+        ylab = "Number of males", data = male_num)
+```
+
+Looks like campus location and block are important. 
+
+My beyond optimal model is this:
+
+male_number ~ treatment + campus_location + wax_moth + workers_at_start + TTEL + treatment:workers_at_start + treatment:TTEL +
+treatment:campus_location + treatment:wax_moth + campus_location:workers_at_start
+
+p395 of Zuur they say, 
+
+"There are 17 explanatory variables and only 52 observations. With such a low number of observations, we prefer not to use more than 5 or 6 explanatory variables, especially if we intend to use smoothing techniques."
+
+This alone is strong justification for removing the less important variables before defining my beyond optimal model. 
+
+Centre starting worker number to aid intercept interpretation.
+
+```{r}
+male_num$workers <- male_num$workers - mean(male_num$workers)
+```
+
+I have 4 options, Poisson GLM, NB GLM, ZIP and ZINB. Define each.
+
+```{r}
+f1 <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers)
+
+# poisson
+M_POISS <- glm(f1, family = poisson, data = male_num)
+
+# NB
+library(MASS)
+
+M_NB <- glm.nb(f1, link = "log", data = male_num)
+
+library(pscl)
+
+f2 <- formula(male_num ~ treatment + camp_loc + wax_moth + workers + TTEL + treatment:workers + treatment:TTEL +
+                     treatment:camp_loc + treatment:wax_moth + camp_loc:workers | 1 + queen_surv)
+
+# ZIP
+M_ZIP <-zeroinfl(f2, dist = "poisson",
+                 link = "logit", data = male_num)
+
+# ZINB
+M_ZINB <- zeroinfl(f2, dist = "negbin",
+                 link = "logit", data = male_num)
+
+
+AIC(M_POISS, M_NB, M_ZIP, M_ZINB)
+```
+
+Pearson Dispersion Statistic Function
+
+```{r}
+dispfun <- function(m) {
+    r <- residuals(m,type="pearson")
+    n <- df.residual(m)
+    dsq <- sum(r^2)
+    c(dsq=dsq,n=n,disp=dsq/n)
+}
+
+sapply(list(M_NB=M_NB, M_ZINB=M_ZINB),dispfun)
+```
+
+Look at the residual plots of the beyond optimal ZINB model 
+
+```{r}
+E_ZINB <- residuals(M_ZINB, type = "pearson")
+
+mu <- predict(M_ZINB, type = "response")
+
+# pearson resid vs fitted
+plot(x = mu, y = E_ZINB, main = "Pearson residuals vs Fitted")
+abline(0,0)
+
+boxplot(E_ZINB ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Residuals vs Treatment", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Residuals vs Block", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Residuals vs Triad", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Residuals vs Campus Location", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+boxplot(E_ZINB ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Residuals vs Wax Moth", 
+        ylab = "Residuals", data = male_num)
+abline(0,0)
+
+plot(x = male_num$TTEL, y = E_ZINB, main = "Pearson residuals vs TTEL")
+abline(0,0)
+
+plot(x = male_num$workers, y = E_ZINB, main = "Pearson residuals vs Worker Number")
+abline(0,0)
+
+# plot original data vs fitted data
+plot(x = male_num$male_num, y = mu, main = "Actual vs Fitted", xlim = c(0, 300), ylim = c(0, 300))
+```
+
+I think there is a pattern in residual vs starting worker number. For very small starting worker number the model underpredicts, which then flips to overprediction, for below the mean (0). Visualise.
+
+```{r}
+# plot original data vs fitted data
+plot(x = male_num$workers, y = male_num$male_num, main = "Starting Worker Number vs Male Number", xlim = c(-6, 10), log='y') # log scale for y to account for loglink
+
+library(lattice)
+
+xyplot(male_num ~ workers, data = male_num,
+       xlab = "Workers", ylab = "Male Number",
+panel = function(x,y){
+panel.grid(h = -1, v = 2)
+panel.points(x, y, col = 1)
+panel.loess(x, y, span = 0.6, col = 1,lwd=2)})
+
+xyplot(E_ZINB ~ workers, data = male_num,
+       xlab = "Workers", ylab = "Pearson Residuals",
+panel = function(x,y){
+panel.grid(h = -1, v = 2)
+panel.points(x, y, col = 1)
+panel.loess(x, y, span = 0.6, col = 1,lwd=2)})
+```
+
+Think I need a smoother for starting worker number. The package I have to use is brms. This utilises Bayes approaches. For simplicity I am going to try and fit (male_num ~ treatment + camp_loc + workers + treatment:camp_loc | 1 + queen_surv), which was the model selected from the whole dataset. Attempt to fit it using brms with a smoother for workers. Then compare to the non smoother model with AIC. 
+
+[Help](https://stats.stackexchange.com/questions/373731/gamm-with-zero-inflated-negative-binomial-looking-for-a-package-in-r/373759)
+[vignettes](https://cran.r-project.org/web/packages/brms/vignettes/brms_distreg.html#zero-inflated-models)
+[model validation](https://m-clark.github.io/easy-bayes/posterior-predictive-checks.html)
+[gams in terms of brms](https://fromthebottomoftheheap.net/2018/04/21/fitting-gams-with-brms/)
+[warnings](https://mc-stan.org/misc/warnings.html#divergent-transitions-after-warmup)
+[divergence in non-mathematical terms](https://www.martinmodrak.cz/2018/02/19/taming-divergences-in-stan-models/)
+[Bayesian Workflow](https://arxiv.org/abs/2011.01808)
+[Visual MCMC diagnostics](https://mc-stan.org/bayesplot/articles/visual-mcmc-diagnostics.html)
+[Plotting MCMC draws](https://mc-stan.org/bayesplot/articles/plotting-mcmc-draws.html)
+[Graphical posterior predictive checks](https://mc-stan.org/bayesplot/articles/graphical-ppcs.html)
+[worked example with count data](https://www.flutterbys.com.au/stats/tut/tut10.6b.html) this is gold
+[Statistical Rethinking with brms, ggplot2, and the tidyverse](https://bookdown.org/ajkurz/Statistical_Rethinking_recoded/)
+
+```{r}
+library(brms)
+
+## fit a model where the zero-inflation is a constant plus a linear
+## effect of queen_surv
+fit1 <- brm(bf(male_num ~ treatment + camp_loc + s(workers, k = 4) + treatment:camp_loc + (1 | block/triad),
+                    zi ~ queen_surv), 
+                 data = male_num, family = zero_inflated_negbinomial(),
+                 chains = 4, cores = 4,
+                 control = list(adapt_delta = 0.99))
+## plot the marginal effects
+plot(conditional_effects(fit1))
+## model summary
+summary(fit1, WAIC = FALSE)
+```
+
+conditional_effects defaults to method = "posterior_epred" (the expectations of the posterior predictive distribution).
+
+```{r}
+# is the interaction term significant? Yes
+fit2 <- brm(bf(male_num ~ treatment + camp_loc + s(workers, k = 4) + (1 | block/triad),
+                    zi ~ queen_surv), 
+                 data = male_num, family = zero_inflated_negbinomial(),
+                 chains = 4, cores = 4,
+                 control = list(adapt_delta = 0.99))
+
+## plot the marginal effects
+plot(conditional_effects(fit2))
+## model summary
+summary(fit2, WAIC = FALSE)
+
+l1 <- LOO(fit1)
+
+l2 <- LOO(fit2)
+
+loo_compare(l1, l2)
+```
+
+```{r}
+# is workers term significant? Yes
+fit3 <- brm(bf(male_num ~ treatment + camp_loc + treatment:camp_loc + (1 | block/triad),
+                    zi ~ queen_surv), 
+                 data = male_num, family = zero_inflated_negbinomial(),
+                 chains = 4, cores = 4,
+                 control = list(adapt_delta = 0.99))
+
+## plot the marginal effects
+plot(conditional_effects(fit3))
+## model summary
+summary(fit3, WAIC = FALSE)
+
+l1 <- LOO(fit1)
+
+l3 <- LOO(fit3)
+
+loo_compare(l1, l3)
+```
+
+The loo_compare shows that the camp_loc:treatment interaction  and worker smoother are important. 
+
+I keep getting this error:
+
+[1] "Error in sampler$call_sampler(args_list[[i]]) : "
+[2] "  c++ exception (unknown reason)"                
+error occurred during calling the sampler; sampling not done
+
+This was because I had R 3.6 loaded not 4.2. Silly. 
+
+```{r}
+library(bayesplot)
+
+y <- male_num$male_num
+yrep_fit1 <- posterior_predict(fit1, draws = 500)
+
+# density overlay of observed (thick blue) vs simulations from the posterior predictive distribution.
+color_scheme_set("brightblue")
+ppc_dens_overlay(y, yrep_fit1[1:50, ])
+
+# histogram of observed data compared to first 5 ypred predicted from posterior predictive distribution. 
+ppc_hist(y, yrep_fit1[1:5, ])
+
+# comparing the probability of 0 from observed data to simulations from posterior predictive distribution. 
+prop_zero <- function(x) mean(x == 0)
+prop_zero(y) # check proportion of zeros in y
+ppc_stat(y, yrep_fit1, stat = "prop_zero", binwidth = 0.005)
+
+# look at the distribution of the maximum value in the replications
+ppc_stat(y, yrep_fit1, stat = "max", binwidth = 100) + coord_cartesian(xlim = c(-1, 2500))
+```
+
+My model has a tendency to overpredict very large values. Maybe try a zero inflated Poisson model then. 
+
+```{r}
+## fit a model where the zero-inflation is a constant plus a linear
+## effect of queen_surv
+fit4 <- brm(bf(male_num ~ treatment + camp_loc + s(workers, k = 4) + treatment:camp_loc + (1 | block/triad),
+                    zi ~ queen_surv), 
+                 data = male_num, family = zero_inflated_poisson(),
+                 chains = 4, cores = 4,
+                 control = list(adapt_delta = 0.99))
+## plot the marginal effects
+plot(conditional_effects(fit4))
+## model summary
+summary(fit4, WAIC = FALSE)
+```
+
+When fitting the ZIP, "Warning: There were 1413 transitions after warmup that exceeded the maximum treedepth". In warning link above it says, "We do not generally recommend increasing max treedepth. In practice, the max treedepth limit being reached can be a sign of model misspecification, and to increase max treedepth can then result in just taking longer to fit a model that you don’t want to be fitting". Also, "If this is the only warning you are getting and your ESS and R-hat diagnostics are good, it is likely safe to ignore this warning, but finding the root cause could result in a more efficient model".
+
+```{r}
+library(bayesplot)
+y <- male_num$male_num
+yrep_fit4 <- posterior_predict(fit4, draws = 500)
+
+# density overlay of observed (thick blue) vs simulations from the posterior predictive distribution.
+color_scheme_set("brightblue")
+ppc_dens_overlay(y, yrep_fit4[1:50, ])
+
+# histogram of observed data compared to first 5 ypred predicted from posterior predictive distribution. 
+ppc_hist(y, yrep_fit4[1:5, ])
+
+# comparing the probability of 0 from observed data to simulations from posterior predictive distribution. 
+prop_zero <- function(x) mean(x == 0)
+prop_zero(y) # check proportion of zeros in y
+ppc_stat(y, yrep_fit4, stat = "prop_zero", binwidth = 0.005)
+
+# look at the distribution of the maximum value in the replications
+ppc_stat(y, yrep_fit4, stat = "max", binwidth = 100) + coord_cartesian(xlim = c(-1, 2500))
+```
+
+The ZIP model looks better as it does not overpredict large values as much. Plot residuals vs fitted (linear scale not response, although i could have used either). 
+
+```{r}
+#Calculate residuals 
+Resid.brm <- residuals(fit4, type='pearson')
+# extract fitted
+Fitted.brm <- exp(fitted(fit4, scale='linear'))
+
+#resid vs fitted
+ggplot(data=NULL, aes(y=Resid.brm[,'Estimate'], x=Fitted.brm[,'Estimate'])) + geom_point()
+
+# plot actual vs fitted
+plot(x = male_num$male_num, y = Fitted.brm[,'Estimate'], main = "Actual vs Fitted", xlim = c(0, 300), ylim = c(0, 300))
+
+```
+
+One or two residuals are larger than the others. Where the fitted value was much lower than the observed. Also, one point has been fitted to around 400, which is incorrect (where worker_number is 28). There are no patterns though, which is good. The actual vs fitted also shows the model is pretty good, except for the three colonies with unexpected large male numbers and the one colony with 28 workers (change the y axis scale to 500 to see it).
+
+What about testing for overdispersion?
+
+```{r}
+library(coda)
+Resid.brm <- residuals(fit4, type='pearson', summary=FALSE)
+
+SSres.brm <- apply(Resid.brm^2,1,sum)
+(df <- nrow(male_num) - 18) # here I calculated the df manually.
+
+Disp <- SSres.brm/df
+data.frame(Median=median(Disp), Mean=mean(Disp), HPDinterval(as.mcmc(Disp)),
+           HPDinterval(as.mcmc(Disp)))
+
+```
+
+coef() function is being annoying. My ZIP with a random effect should have 17df so 42 residual.df. For the smoother df:
+
+Smooths in the model are going to be treated as random effects and the model is estimated as a GLMM, which exploits the duality of splines as random effects. In this representation, the wiggly parts of the spline basis are treated as a random effect and their associated variance parameter controls the degree of wiggliness of the fitted spline. The perfectly smooth parts of the basis are treated as a fixed effect. 
+
+Above from [gams in terms of brms]. 
+
+So 2 (or one extra from straight line, the random effect that incorporates the non-linear component).
+
+This shows that my ZIP is over dispersed.
+
+Necessity for Zero Inflation
+
+```{r}
+#proportion of 0's in the data
+dat.zip.tab<-table(male_num$male_num==0)
+dat.zip.tab/sum(dat.zip.tab)
+
+
+#proportion of 0's expected from a Poisson distribution
+mu <- mean(male_num$male_num)
+cnts <- rpois(10000, mu)
+dat.zip.tabE <- table(cnts == 0)
+dat.zip.tabE/sum(dat.zip.tabE)
+
+```
+
+Shows my data is zero inflated.
+
+Now we will compare the sum of squared residuals to the sum of squares residuals that would be expected from a Poisson distribution matching that estimated by the model. Essentially this is estimating how well the Poisson distribution, the log-link function and the linear model approximates the observed data. When doing so, we need to consider the expected value and variance of the zero-inflated poisson.
+
+E(yi)=λ×(1−θ)
+
+Var(yi)=λ×(1−θ)×(1+θ×λ2)
+
+```{r}
+Resid.zip.brm <- residuals(fit4, type='pearson', summary=FALSE) # extract residuals from actual model
+SSres.zip.brm <- apply(Resid.zip.brm^2,1,sum) # calculate residual SoS
+lambda.zip.brm <- exp(fitted(fit4, scale='linear', summary=FALSE)) # extract fitted values from model
+YNew.zip.brm <- matrix(rpois(length(lambda.zip.brm), lambda=lambda.zip.brm),
+                       nrow=nrow(lambda.zip.brm)) # use these fitted values to define a poisson distribution, predict some values from this poission distribution
+
+Resid1.zip.brm<-(lambda.zip.brm - YNew.zip.brm)/sqrt(lambda.zip.brm) # compare the fitted values from the original model, used to define the Poisson distribution above,
+                                                                     # to the newly predicted values from said poisson distribution. Save residuals
+SSres.sim.zip.brm<-apply(Resid1.zip.brm^2,1,sum) # Creates an expected sum of squares if poisson distribution assumption is correct.
+mean(SSres.sim.zip.brm>SSres.zip.brm) # compares actual sum of squares to expected sum of squares if poisson distribution is good fit for data. 
+```
+
+A Bayesian p-value very close to 0.5 suggests that there is a good fit of the model to the data.
+
+This shows that there is more variance in the data than can be explained by a poisson distribution. 
+
+Below trying to explore simulated residuals. These allow for the detection of overdispersion.
+
+```{r}
+lambda.zip.brm <- exp(fitted(fit4, scale='linear', summary=FALSE))[,1:nrow(male_num)]
+
+theta <- binomial()$linkinv(mean(rstan:::extract(fit4$fit, 'b_zi_Intercept')[[1]])) # not sure if this is quite correct but it will still allow for overdispersion test.
+
+simRes <- function(lambda, data, n=250, plot=T, family, size=NULL,theta=NULL) {
+ require(gap)
+ N = nrow(data)
+ sim = switch(family,
+    'poisson' = matrix(rpois(n*N,apply(lambda,2,mean)),ncol=N, byrow=TRUE),
+    'negbin' = matrix(MASS:::rnegbin(n*N,apply(lambda,2,mean),size),ncol=N, byrow=TRUE),
+        'zip' = matrix(gamlss.dist:::rZIP(n*N,apply(lambda,2,mean),theta),ncol=N, byrow=TRUE)
+ )
+ a = apply(sim + runif(n,-0.5,0.5),2,ecdf)
+ resid<-NULL
+ for (i in 1:nrow(data)) resid<-c(resid,a[[i]](data$male_num[i] + runif(1 ,-0.5,0.5)))
+ if (plot==T) {
+   par(mfrow=c(1,2))
+   gap::qqunif(resid,pch = 2, bty = "n",
+   logscale = F, col = "black", cex = 0.6, main = "QQ plot residuals",
+   cex.main = 1, las=1)
+   plot(resid~apply(lambda,2,mean), xlab='Predicted value', ylab='Standardized residual', las=1)
+ }
+ resid
+}
+
+simRes(lambda.zip.brm, male_num, family='zip', theta=theta)
+
+```
+
+As you can see ZIP is no good.
+
+The trend (black symbols) in the qq-plot does appears to be overly non-linear (not matching the ideal red line well), suggesting that the model is overdispersed. The spread of standardized (simulated) residuals in the residual plot do not appear overly non-uniform. That is there is not trend in the residuals. However, there is a concentration of points close to 1 or 0 (which implies overdispersion).
+
+Then move onto ZINB section with ZINB model and implement. Include sections where Chain Mixing etc is addressed. 
+
+fit1 is my zero-inflated negative binomial model.
+
+Perform whole process according to tutorial (which doesn't delve into model selection).
+
+Confirm non-normality and explore clumping
+
+```{r}
+hist(male_num$male_num)
+
+boxplot(male_num$male_num, horizontal=TRUE)
+rug(jitter(male_num$male_num))
+```
+
+Explore linearity
+
+```{r}
+hist(male_num$workers)
+
+#now for the scatterplot
+plot(male_num~workers, male_num, log="y")
+with(subset(male_num,male_num>0), lines(lowess(male_num~workers)))
+```
+
+Starting worker number is not uniform. Is there a way I can address this (a transformation)? Also, the male_num vs workers hints at non-linearity. Note that male_num axis was log transformed to account for link function and zeros were filtered out to remove effect on smoother. 
+
+Explore Zero Inflation
+
+```{r}
+#proportion of 0's in the data
+dat.zinb.tab<-table(male_num$male_num==0)
+dat.zinb.tab/sum(dat.zinb.tab)
+
+#proportion of 0's expected from a NB distribution
+mu <- mean(male_num$male_num)
+v <- var(male_num$male_num)
+size <- mu + (mu^2)/v
+cnts <- rnbinom(1000, mu=mu, size=size)
+dat.zinb.tabE <- table(cnts == 0)
+dat.zinb.tabE/sum(dat.zinb.tabE)
+```
+
+In the above, the value under FALSE is the proportion of non-zero values in the data and the value under TRUE is the proportion of zeros in the data. The proportion of zeros observed (5%) far exceeds that that would have been expected (0%). Hence it is highly likely that any models will be zero-inflated.
+
+Model Fitting. Did this above. Repeat
+
+```{r}
+library(brms)
+
+## fit a model where the zero-inflation is a constant plus a linear
+## effect of queen_surv
+fit1 <- brm(bf(male_num ~ treatment + camp_loc + s(workers, k = 4) + treatment:camp_loc + (1 | block/triad),
+                    zi ~ queen_surv), 
+                 data = male_num, family = zero_inflated_negbinomial(),
+                 chains = 4, cores = 4, iter=6000,
+                 control = list(adapt_delta = 0.99))
+## plot the marginal effects
+plot(conditional_effects(fit1))
+## model summary
+summary(fit1, WAIC = FALSE)
+```
+
+Chain Mixing - was MCMC sampling chain was adequately mixed and the retained samples independent?
+
+```{r}
+library(gridExtra)
+library(rstan)
+
+stan_trace(fit1$fit, pars = variables(fit1) [1:19])
+
+stan_dens(fit1$fit, separate_chains=TRUE, pars = variables(fit1) [1:19])
+```
+
+The chains appear well mixed and stable. There are 19 parameters, 
+
+Count Part - Intercept + 2 treatment groups + 3 campus locations + 6 interactions + worker straight component
+
+Binomial Part - intercept + worker survival
+
+NB - psi (k)
+
+Random Component - Block var, block:triad var, worker smoother (wiggly) component.
+
+Next we will explore correlation amongst MCMC samples
+
+```{r}
+stan_ac(fit1$fit, pars = variables(fit1) [1:19])
+```
+
+I think autocorrelation could be a problem here for some parameters. The tutorial implements thinning to correct this but online there is not a consensus regarding this approach. 
+
+
+
+
+Other diagnostic plots. 
+
+```{r}
+library(bayesplot)
+
+posterior_fit1 <- as.array(fit1)
+
+lp1 <- log_posterior(fit1)
+
+np1 <- nuts_params(fit1)
+
+mcmc_parcoord(posterior_fit1, np = np1)
+```
+
+```{r}
+mcmc_pairs(posterior_fit1, np = np1, pars = variables(fit1)[1:6],
+           off_diag_args = list(size = 0.75))
+```
+
+Explore step size characteristics
+
+```{r}
+summary(do.call(rbind, args = get_sampler_params(fit1$fit, inc_warmup = FALSE)), digits = 2)
+
+stan_diag(fit1$fit)
+```
+
+```{r}
+stan_diag(fit1$fit, information = "stepsize")
+```
+
+Tree Depth
+
+```{r}
+stan_diag(fit1$fit, information = "treedepth")
+```
+
+Divergence
+
+```{r}
+stan_diag(fit1$fit, information = "divergence")
+```
+
+rhat, ess, ratio of MCMC error to posterior sd.
+
+```{r}
+library(gridExtra)
+grid.arrange(stan_rhat(fit1$fit) + theme_classic(8),
+             stan_ess(fit1$fit) + theme_classic(8),
+             stan_mcse(fit1$fit) + theme_classic(8),
+             ncol = 2)
+```
+
+What does this all mean and how to interpret?
+
+
+Remember to drop compare block/triad to block by refitting the model with block and using LOO. Look at:
+
+[brms: An R Package for Bayesian Multilevel Models Using Stan](https://cran.r-project.org/web/packages/brms/vignettes/brms_overview.pdf)
+
+```{r}
+
+```
+
+Elli made a very good point. Overparameterisation. From:
+[A brief introduction to mixed effects modelling and multi-model inference in ecology](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5970551/)
+
+Guidelines for the ideal ratio of data points (n) to estimated parameters (k) vary widely (see Forstmeier & Schielzeth, 2011). Crawley (2013) suggests a minimum n/k of 3, though we argue this is very low and that an n/k of 10 is more conservative. A ‘simple’ model containing a three-way interaction between continuous predictors, all that interaction’s daughter terms, and a single random intercept needs to estimate eight parameters, so requires a dataset of a minimum n of 80 using this rule. Interactions can be especially demanding, as fitting interactions between a multi-level factor and a continuous predictor can result in poor sample sizes for specific treatment combinations even if the total n is quite large (Zuur, Ieno & Elphick, 2010), which will lead to unreliable model estimates.
+
+Thinking on this: my model should include -
+
+male_number ~ intercept (1) + treatment (2) + starting worker number (1) + (1 | block (1)) + zi_intercept (1) + worker smoother wiggle (1)
+
+That is 7. 59/7  = >8, which is acceptable.
+
+Refit a model with these specifications. 
+
+```{r}
+fit5 <- brm(bf(male_num ~ treatment + s(workers, k = 4) + (1 | block),
+                    zi ~ 1), 
+                 data = male_num, family = zero_inflated_negbinomial(),
+                 chains = 4, cores = 4,
+                 control = list(adapt_delta = 0.99))
+## plot the marginal effects
+plot(conditional_effects(fit5))
+## model summary
+summary(fit5, WAIC = FALSE)
+```
+
+This article discusses [power analysis](https://link.springer.com/article/10.1007/s10211-004-0095-z)
+
+[pwr package R with examples](https://r-video-tutorial.blogspot.com/2017/07/power-analysis-and-sample-size.html) Reckon this will show how underpowered my study was. Basically my results will be inconclusive as my chance of false negatives will be massive. 
+
+
+Predictions (Marginal Effects)
+Edit: “method = "predict"” accounts for the residual (observation-level) variance, the uncertainty in the fixed coefficients, and the uncertainty in the variance parameters for the grouping factors. “method = "fitted"” accounts only for the uncertainty in the fixed coefficients and the uncertainty in the variance parameters for the grouping factors.
+
+[ref](https://github.com/paul-buerkner/brms/issues/82)
+
+Can you shed more light into what sources of uncertainty the predict function takes into account? As far as I understand, in a multilevel model, there are three sources of uncertainty:
+
+1.the residual (observation-level) variance
+2.the uncertainty in the fixed coefficients
+3.the uncertainty in the variance parameters for the grouping factors
+Are all these uncertainties taken into account?
+
+To include all sources of uncertainty call predict(.). To exclude 1. call fitted(.). To exclude 3. (possible partially if you want), use the re_formula argument.
+
+[ref](https://github.com/paul-buerkner/brms/issues/82)
+
+For a good introduction on [marginal effects in brms](https://www.andrewheiss.com/blog/2021/11/10/ame-bayes-re-guide/)
+
+[Bayes Rules Book](https://www.bayesrulesbook.com/about-the-authors.html)
+
+In bayesian modelling you can scale parameters and define priors for the distribution of these parameters. For example, if you think a group of a treatment will have a positive effect you can define a normal distribution with a mean that takes a positive value. Remember parameters in bayesian analysis are variables and have uncertainty. They are no longer a fixed single value (frequentist). 
+
+Here, we’re still interested in our population parameter. Only now, we’re not assuming that the population parameter is some single fixed value out in the world that we’re trying to capture with confidence intervals—we’ll use the data that we have to estimate the variation in the population parameter. We can use computers to simulate thousands of guesses and then look at the distribution of those guesses.
+
+Lovely quote from [Accessible Bayes Overview](https://evalf21.classes.andrewheiss.com/resource/bayes/#resources)
+
+we talked briefly about the difference between frequentist statistics, where you test for the probability of your data given a null hypothesis, or P(data | H0), and Bayesian statistics, where you test for the probability of your hypothesis given your data, or P(H | data).
+
+This difference is important. In the world of frequentism, which is what pretty much all statistics classes use, you have to compare your findings to a hypothetical null world and you have to talk about rejecting null hypotheses. In the Bayes world, though, you get to talk about the probability that your hypothesis is correct rather than the probability of seeing a value in a null world. So much more convenient and easy to interpret!
+
+It also has this quote:
+
+Importantly, when talking about confidence intervals, you cannot really say anything about the estimate of the parameter itself. Confidence intervals are all about the net, or the range itself. You can legally say this:
+
+We are 95% confident that this confidence interval captures the true population parameter.
+
+You cannot say this:
+
+There’s a 95% chance that the population parameter is X. or There’s a 95% chance that the true value falls in this range.
+
+Confidence intervals tell you about the range, or the net. That’s all.
+
+For a frequentist confidence interval - 95% of the time the true population parameter will be captured by this range (if you take a 100 samples from the population, at least 95 times the true population parameter will fall within their 95% CIs).
+
+For a bayesian credible interval - There is a 95% probability that the true population parameter lies within this range. 
+
+Our minds work in a bayesian way - what is the probability of something occurring?
+
+Not in a frequentist way - what is the probability of observing a result of this magnitude or greater if the null hypothesis is true?
+
