@@ -9,3 +9,1047 @@ output: html_document
 knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 ```
 
+Import data and check data classes.
+
+```{r}
+work_num <- read.csv("./input/worker_number.csv")
+
+work_num$colony_number <- as.factor(work_num$colony_number)
+work_num$block <- as.factor(work_num$block)
+work_num$triad <- as.factor(work_num$triad)
+work_num$experiment_census_day <- as.numeric(work_num$experiment_census_day)
+work_num$wax_moth <- as.factor(work_num$wax_moth)
+work_num$worker_number <- as.numeric(work_num$worker_number)
+work_num$treatment <- as.factor(work_num$treatment)
+work_num$number_of_workers_at_exposure_start <- as.numeric(work_num$number_of_workers_at_exposure_start)
+work_num$campus_location <- as.factor(work_num$campus_location)
+```
+
+Remove colony 57 due to accidental queen death
+
+```{r}
+work_num <- work_num [work_num$colony_number != "57", ]
+
+# helps identify odd looking residuals
+rownames(work_num) <- 1:nrow(work_num)
+```
+
+Visualisations
+
+```{r}
+library(lattice)
+
+MyLines <- function(xi, yi, ...){
+  I <- order(xi)
+  panel.lines(xi[I], yi[I], col = 1)
+}
+
+# by treatment
+xyplot(worker_number ~ experiment_census_day | treatment, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+
+# by block
+xyplot(worker_number ~ experiment_census_day | block, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+
+
+# by number_of_workers_at_exposure_start
+# convert this variable into bins first. "5-9", "10-14", "15-19", "20-24", "25-29"
+swn_index <- vector(length = nrow(work_num))
+
+swn_index [work_num$number_of_workers_at_exposure_start > 0 & work_num$number_of_workers_at_exposure_start < 10] <- "5-9"
+swn_index [work_num$number_of_workers_at_exposure_start > 9 & work_num$number_of_workers_at_exposure_start < 15] <- "10-14"
+swn_index [work_num$number_of_workers_at_exposure_start > 14 & work_num$number_of_workers_at_exposure_start < 20] <- "15-19"
+swn_index [work_num$number_of_workers_at_exposure_start > 19 & work_num$number_of_workers_at_exposure_start < 25] <- "20-24"
+swn_index [work_num$number_of_workers_at_exposure_start > 24 & work_num$number_of_workers_at_exposure_start < 30] <- "25-29"
+
+work_num$SWN <- swn_index
+
+work_num$SWN <- as.factor(work_num$SWN)
+
+work_num$SWN <- factor(work_num$SWN, levels = c("5-9", "10-14", "15-19", "20-24", "25-29"))
+
+# SWN
+xyplot(worker_number ~ experiment_census_day | SWN, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+
+# campus location
+xyplot(worker_number ~ experiment_census_day | campus_location, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+
+# campus location*treatment
+xyplot(worker_number ~ experiment_census_day | campus_location*treatment, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+
+# block*treatment
+xyplot(worker_number ~ experiment_census_day | block*treatment, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+
+# rearing_location
+xyplot(worker_number ~ experiment_census_day | rearing_location, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+```
+
+Coding of the wax moth variable in hindsight doesn't make much sense. Change it so if a colony was affected by wax moth, all the timepoints have wax moth = Y. 
+
+```{r}
+wax_moth_cols <- unique(work_num$colony_number [work_num$wax_moth == "Y"])
+
+wm_index <- vector(length = nrow(work_num))
+
+for (i in 1:length(wax_moth_cols)) {
+  
+  wm_index [work_num$colony_number == wax_moth_cols [i]] <- "Y"
+  
+}
+
+wm_index [wm_index == FALSE] <- "N"
+
+work_num$WM <- wm_index
+
+work_num$WM <- as.factor(work_num$WM)
+
+# wax moth
+xyplot(worker_number ~ experiment_census_day | WM, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+```
+
+Another variable that could be of interest is worker number on field placement (WNFP). Maybe colonies over a certain size on entering the field went on to thrive and those below that threshold did not. Potentially due to being able to thermoregulate more effectively. May be useful to create a max worker variable to visually assess this idea.
+
+```{r}
+# number of workers on field placement
+field_work_num <-  work_num [work_num$experiment_census_day == 14, colnames(work_num) == "worker_number" | colnames(work_num) == "colony_number"]
+
+work_num$WNFP <- 0
+
+for (i in 1:length(field_work_num$colony_number)) {
+  
+  for (j in 1:nrow(work_num)) {
+    
+    if (work_num$colony_number [j] == field_work_num$colony_number [i]) {
+    
+    work_num$WNFP [j] <- field_work_num$worker_number [i]
+    
+    }
+    
+  }
+
+}
+
+# peak worker number
+# find the peak worker number for each colony
+library(tidyverse)
+
+col_nums <- unique(work_num$colony_number)
+
+max_wn_col <- tibble()
+
+for (i in 1:length(col_nums)) {
+  
+  by_col <- work_num [work_num$colony_number == col_nums [i], ]
+  
+  max_wn <- max(by_col$worker_number)
+  
+  max_wn_col_row <- data.frame(col_nums [i], max_wn)
+  
+  max_wn_col <- rbind(max_wn_col, max_wn_col_row)
+  
+}
+
+colnames(max_wn_col) <- c("col", "maxWN")
+
+# create max worker number variable
+work_num$maxWN <- 0
+
+for (i in 1:length(max_wn_col$col)) {
+  
+  for (j in 1:nrow(work_num)) {
+    
+    if (work_num$colony_number [j] == max_wn_col$col [i]) {
+    
+    work_num$maxWN [j] <- max_wn_col$maxWN [i]
+    
+    }
+    
+  }
+
+}
+
+max_wn_field_wn_comp <- data.frame(max_wn_col, "fieldWN" = field_work_num$worker_number)
+
+fwn_index <- vector(length = nrow(work_num))
+
+fwn_index [work_num$WNFP > 0 & work_num$WNFP < 21] <- "1-20"
+fwn_index [work_num$WNFP > 20 & work_num$WNFP < 41] <- "21-40"
+fwn_index [work_num$WNFP > 40 & work_num$WNFP < 61] <- "41-60"
+fwn_index [work_num$WNFP > 60 & work_num$WNFP < 81] <- "61-80"
+
+work_num$fWNFP <- fwn_index
+
+work_num$fWNFP <- as.factor(work_num$fWNFP)
+
+work_num$fWNFP <- factor(work_num$fWNFP, levels = c("1-20", "21-40", "41-60", "61-80"))
+
+# fWNFP worker number on field placement
+xyplot(worker_number ~ experiment_census_day | fWNFP, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+
+# fWNFP worker number on field placement
+xyplot(worker_number ~ experiment_census_day | WNFP < 21, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+```
+
+< 20 workers on field placement appeared to inhibit worker number growth. However, some colonies with 21-40 and 41-60 workers on field placement still exhibited a low worker maximum.
+
+None of the selected factors above seem to explain the differences in worker number day shape. I would argue already at this early stage that the data could potentially be explained with one smoother term for time and a large degree of variation associated with it. This suggests that treatment had no effect, and this is supported by visual inspection of the data partitioned by treatment, above.
+
+These are the elements of the analysis I have to consider:
+
+1. Smoothers will be necessary due to the clear non-linear relationship
+2. Interactions are what are important. For smoothers these are simply the number of smoothers required. 
+3. How many smoothers do I need? One, three (one for each treatment), six (one for each treatment:WM combination)?
+4. How do I determine this? Use AIC? Code smoothers as modification of overall smoother and use the F-statistic and associated p-value for the smoother using
+the by option, obtained by summary()? compare the model with and without the second smoother and apply an F-test? Are these tests appropriate once we add poisson/NB distribution?
+5. Accounting for count aspect of data using poisson/NB approach?
+6. Appropriately coding the random effects? Should I use (time|block/triad/colony) to account for the variation of time's relationship with worker number between colonies? Should I include corAR1(form=~day|colony) correlation structure to tackle non independent residuals?
+
+Start off with a GAM with a poisson distribution with one smoother and compare to a GAM with a NB distribution.
+
+```{r}
+# these two values indicate that a poisson may not be suitable as the variance of worker number is much larger than the mean
+mean(work_num$worker_number)
+var(work_num$worker_number)
+
+library(mgcv)
+library(MASS)
+
+# specify gam with poisson distribution
+gam_poiss <- gam(worker_number ~ treatment + WM + s(experiment_census_day),
+                 family=poisson,
+                 data = work_num)
+
+summary(gam_poiss)
+
+# anova(gam_poiss)
+
+plot(gam_poiss)
+
+# have to remove either treatment or WM for this to display correctly
+# par(mar = c(2, 2, 2, 2))
+# vis.gam(gam_poiss_one_smooth, theta = 120, color = "heat")
+
+# specify gam with nb distribution
+gam_nb <- gam(worker_number ~ treatment + WM + s(experiment_census_day),
+                 family=nb(),
+                 data = work_num)
+
+summary(gam_nb)
+
+# anova(gam_nb)
+
+plot(gam_nb)
+
+# likelihood ratio test
+llhNB <- logLik(gam_nb); llhPoisson <- logLik(gam_poiss)
+
+d <- 2 * (llhNB - llhPoisson)
+
+pval <- 0.5 * pchisq(as.numeric(d), df = 1,
+                     lower.tail = FALSE)
+
+pval
+
+# AIC
+AIC(gam_nb, gam_poiss)
+```
+
+Both AIC and LLH test suggest that NB is a better fit so select NB as the distribution.
+
+Next fit a model with three smoothers, one for each level of treatment. Fit the model using the syntax where first a smoother is fitted that represents the overall day effect for all treatments. Next, two other smoothers are fitted, for flup and sivanto, that represent the deviation of these two groups from the overall worker number-day relationship. Specifying the model in this way helps ascertain whether the additional smoothers for flup and sivanto are required.
+
+```{r}
+gam_nb_treat <- gam(worker_number ~ treatment +
+                    s(experiment_census_day) +
+                    s(experiment_census_day, by=as.numeric(treatment=="flup")) +
+                    s(experiment_census_day, by=as.numeric(treatment=="sivanto")),
+                    family = nb(),
+                    data = work_num)
+
+summary(gam_nb_treat)
+
+plot(gam_nb_treat)
+
+AIC(gam_nb, gam_nb_treat)
+
+anova(gam_nb, gam_nb_treat, test = "F")
+```
+
+Based on the experimental design treatment must be included in the model. There are a number of other factors such as, wax_moth, campus_location and block. It would be thorough to investigate if these factors were interacting individually with day. Given the vast number of possible interactions between day and all the factors, I think an approach similar (but slightly modified) to chapter 16 in zuur, where forward selection is used, is applicable. 
+
+Start with worker number ~ s(experiment_census_day) and use this as the baseline. 
+
+Then fit models:
+
+worker number ~ s(experiment_census_day) + 
+                s(experiment_census_day, by=as.numeric(treatment=="flup")) +
+                s(experiment_census_day, by=as.numeric(treatment=="sivanto")) +
+                treatment
+
+worker number ~ s(experiment_census_day) + 
+                s(experiment_census_day, by=as.numeric(WM=="Y")) +
+                WM
+
+worker number ~ s(experiment_census_day) + 
+                s(experiment_census_day, by=as.numeric(campus_location=="WA")) +
+                s(experiment_census_day, by=as.numeric(campus_location=="BA")) +
+                s(experiment_census_day, by=as.numeric(campus_location=="BG")) +
+                campus_location
+
+worker number ~ s(experiment_census_day) + 
+                s(experiment_census_day, by=as.numeric(block=="2")) +
+                s(experiment_census_day, by=as.numeric(block=="3")) +
+                s(experiment_census_day, by=as.numeric(block=="4")) +
+                s(experiment_census_day, by=as.numeric(block=="5")) +
+                block
+
+compare through AIC and retain the best one. If nothing is better than treatment then take treatment and keep that as the final model.
+
+I think i am right in saying that exploring combinations of other factors with treatment is fraught with issues due to the number of colonies in each treatment:respective factor group. Means some of the smoothers created will be based on 3-5 colonies, which undermines any results. 
+
+I think the best I can do is show the other factor:smoother options were not significant (if that is indeed the case), then stick with treatment only and try and sort out the random effect component (random intercept and slope and/or ar-1 correlation structure).
+
+```{r}
+gam_nb_treat <- gam(worker_number ~ treatment +
+                    s(experiment_census_day) +
+                    s(experiment_census_day, by=as.numeric(treatment=="flup")) +
+                    s(experiment_census_day, by=as.numeric(treatment=="sivanto")),
+                    family = nb(),
+                    data = work_num)
+
+summary(gam_nb_treat)
+
+gam_nb_WM <- gam(worker_number ~ WM +
+                    s(experiment_census_day) +
+                    s(experiment_census_day, by=as.numeric(WM=="Y")),
+                    family = nb(),
+                    data = work_num)
+
+summary(gam_nb_WM)
+
+gam_nb_CL <- gam(worker_number ~ s(experiment_census_day) +
+                   s(experiment_census_day, by=as.numeric(campus_location=="WA")) +
+                   s(experiment_census_day, by=as.numeric(campus_location=="BA")) +
+                   s(experiment_census_day, by=as.numeric(campus_location=="BG")) +
+                   campus_location,
+                   family = nb(),
+                   data = work_num)
+
+summary(gam_nb_CL)
+
+plot(gam_nb_CL)
+
+gam_nb_block <- gam(worker_number ~ s(experiment_census_day) +
+                      s(experiment_census_day, by=as.numeric(block=="2")) +
+                      s(experiment_census_day, by=as.numeric(block=="3")) +
+                      s(experiment_census_day, by=as.numeric(block=="4")) +
+                      s(experiment_census_day, by=as.numeric(block=="5")) +
+                      block,
+                      family = nb(),
+                      data = work_num)
+
+summary(gam_nb_block)
+
+plot(gam_nb_block)
+
+AIC(gam_nb_treat, gam_nb_WM, gam_nb_CL, gam_nb_block)
+```
+
+Tests and comparisons above suggest that wax moth can be discounted. All the p values are approximate with gam so p = 0.01-0.05 is not convincing. Campus location and block were the two most important variables. As we are only interested in controlling for their effect, not investigating it, these should be included as random components (random slopes).
+
+```{r}
+# for random slopes the order of experiment_census_day and block is not important
+gam_nb_treat_block_slope <- gam(worker_number ~ treatment +
+                    s(experiment_census_day) +
+                    s(experiment_census_day, by=as.numeric(treatment=="flup")) +
+                    s(experiment_census_day, by=as.numeric(treatment=="sivanto")) +
+                    s(experiment_census_day, block, bs = "re"),
+                    family = nb(),
+                    data = work_num)
+
+summary(gam_nb_treat_block_slope) # this output is worrying as it has NANs and large CIs for the random effect variance. 
+
+library(gratia)
+variance_comp(gam_nb_treat_block_slope)
+
+# specify in different way
+gam_nb_treat_block_slope_spec <- gam(worker_number ~ treatment +
+                    s(experiment_census_day, by=treatment) +
+                    s(experiment_census_day, block, bs = "re"),
+                    family = nb(),
+                    data = work_num)
+
+summary(gam_nb_treat_block_slope_spec) # everything appears stable here. 
+variance_comp(gam_nb_treat_block_slope_spec)
+```
+
+When using the Zuur syntax to compare the smoothers for each level of treatment I am getting some suspicious results in the summary() section. I read [here](https://fromthebottomoftheheap.net/2017/12/14/difference-splines-ii/) that an ordered-factor-smooth interaction approach can be taken. This is where treatment is converted to an ordered factor (for modelling purposes only), a smooth is fitted for the reference level, then two difference smooths are fitted for the other two levels. This sounds (roughly) analogous to what I was attempting with the Zuur approach (zuur approach was altering the overall smoother for each treatment where this is altering the reference level smooth, therefore this approach sounds more relevant). Try it this way and see if the results differ. As the Zuur book is quite old now the way certain models are coded could have changed. This could be why I am getting odd results. Let's see.
+
+Note = the use of treatment for the intercept and treatment_ord for the difference smooths is valid. See the reference.
+
+```{r}
+# change treatment into an ordered factor and call it treatment_ord
+work_num$treatment_ord <- ordered(work_num$treatment, levels = c("control", "flup", "sivanto"))
+
+gam_nb_treat_ord_block_slope <- gam(worker_number ~ treatment +
+                                    s(experiment_census_day) +
+                                    s(experiment_census_day, by=treatment_ord) +
+                                    s(experiment_census_day, block, bs = "re"),
+                    family = nb(),
+                    data = work_num)
+
+summary(gam_nb_treat_ord_block_slope)
+
+variance_comp(gam_nb_treat_ord_block_slope)
+
+plot(gam_nb_treat_ord_block_slope, shade = TRUE, pages = 1, scale = 0, seWithMean = TRUE)
+```
+
+Add campus location to the random effects. 
+
+```{r}
+gam_nb_treat_ord_block_slope_CL <- gam(worker_number ~ treatment +
+                                    s(experiment_census_day) +
+                                    s(experiment_census_day, by=treatment_ord) +
+                                    s(experiment_census_day, block, bs = "re") +
+                                    s(experiment_census_day, campus_location, bs = "re"),
+                    family = nb(),
+                    data = work_num)
+
+summary(gam_nb_treat_ord_block_slope_CL)
+
+variance_comp(gam_nb_treat_ord_block_slope_CL)
+
+plot(gam_nb_treat_ord_block_slope_CL, shade = TRUE, pages = 1, scale = 0, seWithMean = TRUE)
+```
+
+```{r}
+# Plot the summed effect of x0 (without random effects)
+library(itsadug)
+
+# plot of fixed effects
+plot_smooth(gam_nb_treat_ord_block_slope_CL,
+            view = "experiment_census_day",
+            plot_all = "treatment",
+            transform = exp,
+            rm.ranef = TRUE,
+            main = "Worker number vs census day for each treatment",
+            xlab = "Census Day",
+            ylab = "Worker Number")
+
+# Plot each level of the random effect
+plot_smooth(gam_nb_treat_ord_block_slope_CL,
+            view = "experiment_census_day",
+            rm.ranef = FALSE,
+            cond = list(block = "1"),
+            main = "Worker number vs census day for each block. Treatment set to control",
+            xlab = "Census Day",
+            ylab = "Worker Number",
+            col = "orange",
+            transform=exp)
+plot_smooth(gam_nb_treat_ord_block_slope_CL, view = "experiment_census_day", rm.ranef = FALSE, cond = list(block = "2"),
+    add = TRUE, col = "red", transform=exp)
+plot_smooth(gam_nb_treat_ord_block_slope_CL, view = "experiment_census_day", rm.ranef = FALSE, cond = list(block = "3"),
+    add = TRUE, col = "purple", transform=exp)
+plot_smooth(gam_nb_treat_ord_block_slope_CL, view = "experiment_census_day", rm.ranef = FALSE, cond = list(block = "4"),
+    add = TRUE, col = "turquoise", transform=exp)
+plot_smooth(gam_nb_treat_ord_block_slope_CL, view = "experiment_census_day", rm.ranef = FALSE, cond = list(block = "5"),
+    add = TRUE, col = "green", transform=exp)
+
+# Plot each level of campus_location random effect
+plot_smooth(gam_nb_treat_ord_block_slope_CL,
+            view = "experiment_census_day",
+            rm.ranef = FALSE,
+            cond = list(campus_location = "M"),
+            main = "Worker number vs census day for each Campus Location. Treatment set to control",
+            xlab = "Census Day",
+            ylab = "Worker Number",
+            col = "orange",
+            transform=exp)
+plot_smooth(gam_nb_treat_ord_block_slope_CL, view = "experiment_census_day", rm.ranef = FALSE, cond = list(campus_location = "WA"),
+    add = TRUE, col = "red", transform=exp)
+plot_smooth(gam_nb_treat_ord_block_slope_CL, view = "experiment_census_day", rm.ranef = FALSE, cond = list(campus_location = "BA"),
+    add = TRUE, col = "purple", transform=exp)
+plot_smooth(gam_nb_treat_ord_block_slope_CL, view = "experiment_census_day", rm.ranef = FALSE, cond = list(campus_location = "BG"),
+    add = TRUE, col = "turquoise", transform=exp)
+```
+
+Discussion on how to determine [significance of random effects](https://stackoverflow.com/questions/54244341/how-to-test-the-statistical-significance-of-a-random-effect-in-gamm)
+
+Quotes, "I wouldn't even bother testing the random effect in this model specifically, and often I don't care if it is significant or not. It depends on the question or hypothesis I am working on. Often I want it in the model due to some clustering in the data that I want included in the model regardless of the significance."
+
+This line of reasoning applies to both campus_location and block.
+
+"If gam() is used, then summary() gives a test based on a likelihood ratio test as suggested by @BenBolker, but the reference distribution is corrected for testing on the boundary of the parameter space"
+
+Compare the model with no random effects to the one with block as a random slope and the other with block and campus location as a random slope. 
+
+```{r}
+AIC(gam_nb_treat, gam_nb_treat_ord_block_slope , gam_nb_treat_ord_block_slope_CL)
+```
+
+I am not sure how applicable this AIC comparison is. Even ignoring this the summary() information strongly suggests the model with random slope intercepts for block and campus location is favourable. Combine this with the fact that they were part of my experimental design and I think I should include them as random slopes. The only reason I would not have included them is if I had convergence issues, and I don't.
+
+Graphical Validation
+
+```{r}
+E <- residuals(gam_nb_treat_ord_block_slope_CL, type = "pearson")
+
+plot(x = work_num$experiment_census_day, y = E)
+abline()
+
+predict(gam_nb_treat_ord_block_slope_CL, type = "response", newdata = data.frame("treatment"="control",
+                                                                                 "treatment_ord"="control",
+                                                                                 "experiment_census_day"=84,
+                                                                                 "block"="4",
+                                                                                 "campus_location"="M"))
+
+boxplot(E~campus_location,
+        varwidth=TRUE,
+        data = work_num)
+
+boxplot(E~block,
+        varwidth=TRUE,
+        data = work_num)
+
+boxplot(E~rearing_location,
+        varwidth=TRUE,
+        data = work_num)
+
+boxplot(E~WM,
+        varwidth=TRUE,
+        data = work_num)
+```
+
+The pattern in the vs day plot may appear alarming but all it is showing is some colonies lived longer than expected with a small number of individuals. For example, on day 84 there is a normalised residual of almost 8. This is for colony 214. That is because the predicted value is 0.7229225 (above) but the colony 214 had 9 workers remaining. Does this affect the interpretations I draw from the model? No.
+
+Something I haven't considered so far is a residual correlation structure in relation to day as it is time. In the residual plot vs day, apart from the large residuals that have been addressed above, I can't see any patterns in my residuals, which suggests that corAR1 probably isn't necessary. For this I'm pretty sure I have to switch to gamm.
+
+```{r}
+# this chunk shows that the correlation structure adds nothing to the model. 
+# correlation structure, block slope and CL slope
+gam_nb_treat_corar1_block_slope_CL <- gamm(worker_number ~ treatment + s(experiment_census_day) + s(experiment_census_day, by=treatment_ord),
+                            correlation = corAR1(form =~ experiment_census_day | colony_number),
+                            random = list(block =~ 0+experiment_census_day, campus_location =~ 0+experiment_census_day),
+                            family = nb(),
+                            data = work_num)
+
+summary(gam_nb_treat_corar1_block_slope_CL$gam)
+
+summary(gam_nb_treat_corar1_block_slope_CL$lme)
+
+# without corAR1
+gam_nb_treat_corar1_block_slope_CL_no_corr <- gamm(worker_number ~ treatment + s(experiment_census_day) + s(experiment_census_day, by=treatment_ord),
+                            random = list(block =~ 0+experiment_census_day, campus_location =~ 0+experiment_census_day),
+                            family = nb(),
+                            data = work_num)
+
+summary(gam_nb_treat_corar1_block_slope_CL_no_corr$gam)
+
+summary(gam_nb_treat_corar1_block_slope_CL_no_corr$lme)
+```
+
+AIC lower for the model without corAR1 and phi=0. None of the estimates really change either. gamm specification agrees with the gam specification.
+
+Create my own visualisation for the fixed effect component with the observed values overlaid. As using gam or gamm doesn't change the conclusion it doesn't matter which one I select. I'll choose gam.
+
+```{r}
+final_model <- gam(worker_number ~ treatment +
+                                    s(experiment_census_day) +
+                                    s(experiment_census_day, by=treatment_ord) +
+                                    s(experiment_census_day, block, bs = "re") +
+                                    s(experiment_census_day, campus_location, bs = "re"),
+                    family = nb(),
+                    data = work_num)
+
+
+# predict model output
+D1_control <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$treatment == "control"]),
+                                                     max(work_num$experiment_census_day [work_num$treatment == "control"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "M",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_con <- setNames(as_tibble(predict(final_model,
+                                        D1_control,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        exclude = c("s(experiment_census_day,block)", "s(experiment_census_day,campus_location)"),
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_con <- mutate(ci_df_con,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_flup <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$treatment == "flup"]),
+                                                     max(work_num$experiment_census_day [work_num$treatment == "flup"]), length.out = 200),
+                         treatment = "flup",
+                         treatment_ord = "flup",
+                         campus_location = "M",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_flup <- setNames(as_tibble(predict(final_model,
+                                        D1_flup,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        exclude = c("s(experiment_census_day,block)", "s(experiment_census_day,campus_location)"),
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_flup <- mutate(ci_df_flup,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_sivanto <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$treatment == "sivanto"]),
+                                                     max(work_num$experiment_census_day [work_num$treatment == "sivanto"]), length.out = 200),
+                         treatment = "sivanto",
+                         treatment_ord = "sivanto",
+                         campus_location = "M",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_siv <- setNames(as_tibble(predict(final_model,
+                                        D1_sivanto,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        exclude = c("s(experiment_census_day,block)", "s(experiment_census_day,campus_location)"),
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_siv <- mutate(ci_df_siv,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+
+# ---------------------
+
+# combine line predictions
+ggplot_lines_df <- rbind(cbind(D1_control, ci_df_con), cbind(D1_flup, ci_df_flup), cbind(D1_sivanto, ci_df_siv))
+
+model_preds <- ggplot() + 
+      geom_point(data = work_num, aes(x = experiment_census_day, y = worker_number, color = treatment)) +
+      geom_line(data = ggplot_lines_df, aes(x = experiment_census_day, y = fit_resp, group = treatment, color = treatment)) +
+      #geom_ribbon(data = ggplot_lines_df, aes(x = experiment_census_day, y = fit_resp, ymin = right_lwr, ymax = right_upr,
+      #                                        group = treatment, color = treatment, fill = treatment), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#117733", "#332288", "#AA4499"), name = "Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      scale_fill_manual(values=c("#117733", "#332288", "#AA4499"), name = "Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      xlab("Experiment Day") +
+      ylab("Worker Number") +
+      ggtitle("Change in worker number over time by treatment")
+
+model_preds
+```
+
+Show the difference between block. treatment=control and campus_location=M.
+
+```{r}
+# predict model output
+D1_block_one <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$block == "1"]),
+                                                     max(work_num$experiment_census_day [work_num$block == "1"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "M",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_block_one <- setNames(as_tibble(predict(final_model,
+                                        D1_block_one,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_block_one <- mutate(ci_df_block_one,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_block_two <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$block == "2"]),
+                                                     max(work_num$experiment_census_day [work_num$block == "2"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "M",
+                         block = "2"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_block_two <- setNames(as_tibble(predict(final_model,
+                                        D1_block_two,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_block_two <- mutate(ci_df_block_two,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_block_three <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$block == "3"]),
+                                                     max(work_num$experiment_census_day [work_num$block == "3"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "M",
+                         block = "3"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_block_three <- setNames(as_tibble(predict(final_model,
+                                        D1_block_three,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_block_three <- mutate(ci_df_block_three,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_block_four <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$block == "4"]),
+                                                     max(work_num$experiment_census_day [work_num$block == "4"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "M",
+                         block = "4"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_block_four <- setNames(as_tibble(predict(final_model,
+                                        D1_block_four,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_block_four <- mutate(ci_df_block_four,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_block_five <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$block == "5"]),
+                                                     max(work_num$experiment_census_day [work_num$block == "5"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "M",
+                         block = "5"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_block_five <- setNames(as_tibble(predict(final_model,
+                                        D1_block_five,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_block_five <- mutate(ci_df_block_five,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+
+# ---------------------
+
+# combine line predictions
+ggplot_lines_df_block <- rbind(cbind(D1_block_one, ci_df_block_one), 
+                               cbind(D1_block_two, ci_df_block_two),
+                               cbind(D1_block_three, ci_df_block_three),
+                               cbind(D1_block_four, ci_df_block_four),
+                               cbind(D1_block_five, ci_df_block_five))
+
+model_preds_block <- ggplot() + 
+      geom_point(data = work_num, aes(x = experiment_census_day, y = worker_number, color = block)) +
+      geom_line(data = ggplot_lines_df_block, aes(x = experiment_census_day, y = fit_resp, group = block, color = block)) +
+      #geom_ribbon(data = ggplot_lines_df_block, aes(x = experiment_census_day, y = fit_resp, ymin = right_lwr, ymax = right_upr,
+      #                                        group = block, color = block, fill = block), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#44AA99", "#999933", "#882255", "#661100", "#6699CC"), name="Block") +
+      scale_fill_manual(values=c("#44AA99", "#999933", "#882255", "#661100", "#6699CC"), name="Block") +
+      xlab("Experiment Day") +
+      ylab("Worker Number") +
+      ggtitle("Change in worker number over time by block")
+
+model_preds_block
+```
+
+Show the difference between campus location. treatment=control and block=1.
+
+```{r}
+# predict model output
+D1_CL_M <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$campus_location == "M"]),
+                                                     max(work_num$experiment_census_day [work_num$campus_location == "M"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "M",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_CL_M <- setNames(as_tibble(predict(final_model,
+                                        D1_CL_M,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_CL_M <- mutate(ci_df_CL_M,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_CL_WA <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$campus_location == "WA"]),
+                                                     max(work_num$experiment_census_day [work_num$campus_location == "WA"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "WA",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_CL_WA <- setNames(as_tibble(predict(final_model,
+                                        D1_CL_WA,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_CL_WA <- mutate(ci_df_CL_WA,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_CL_BA <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$campus_location == "BA"]),
+                                                     max(work_num$experiment_census_day [work_num$campus_location == "BA"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "BA",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_CL_BA <- setNames(as_tibble(predict(final_model,
+                                        D1_CL_BA,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_CL_BA <- mutate(ci_df_CL_BA,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_CL_BG <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$campus_location == "BG"]),
+                                                     max(work_num$experiment_census_day [work_num$campus_location == "BG"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "BG",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_CL_BG <- setNames(as_tibble(predict(final_model,
+                                        D1_CL_BG,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_CL_BG <- mutate(ci_df_CL_BG,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+
+# ---------------------
+
+# combine line predictions
+ggplot_lines_df_CL <- rbind(cbind(D1_CL_M, ci_df_CL_M), 
+                               cbind(D1_CL_WA, ci_df_CL_WA),
+                               cbind(D1_CL_BA, ci_df_CL_BA),
+                               cbind(D1_CL_BG, ci_df_CL_BG))
+
+model_preds_CL <- ggplot() + 
+      geom_point(data = work_num, aes(x = experiment_census_day, y = worker_number, color = campus_location)) +
+      geom_line(data = ggplot_lines_df_CL, aes(x = experiment_census_day, y = fit_resp, group = campus_location, color = campus_location)) +
+      #geom_ribbon(data = ggplot_lines_df_CL, aes(x = experiment_census_day, y = fit_resp, ymin = right_lwr, ymax = right_upr,
+      #                                        group = campus_location, color = campus_location, fill = campus_location), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#888888", "#88CCEE", "#CC6677", "#DDCC77"), name="Campus Location", labels = c("1", "2", "3", "4")) +
+      scale_fill_manual(values=c("#888888", "#88CCEE", "#CC6677", "#DDCC77"), name="Campus Location", labels = c("1", "2", "3", "4")) +
+      xlab("Experiment Day") +
+      ylab("Worker Number") +
+      ggtitle("Change in worker number over time by campus location")
+
+model_preds_CL
+```
+
+Notes - 
+
+[What does ref.df mean](https://stats.stackexchange.com/questions/70871/generalised-additive-model-what-is-ref-df-in-rs-output)
+[plot_smooth function](https://www.rdocumentation.org/packages/itsadug/versions/2.4.1/topics/plot_smooth)

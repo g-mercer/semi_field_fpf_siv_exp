@@ -8,3 +8,185 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 ```
+
+Import data
+
+```{r}
+queen_surv <- read.csv("./input/queen_survival.csv")
+
+# ensure variables are in correct class
+queen_surv$block <- as.factor(queen_surv$block)
+queen_surv$treatment <- as.factor(queen_surv$treatment)
+queen_surv$triad <- as.factor(queen_surv$triad)
+queen_surv$number_of_workers_at_exposure_start <- as.numeric(queen_surv$number_of_workers_at_exposure_start)
+queen_surv$wax_moth <- as.factor(queen_surv$wax_moth)
+queen_surv$queen_survival_days <- as.numeric(queen_surv$queen_survival_days)
+queen_surv$campus_location <- as.factor(queen_surv$campus_location)
+```
+
+Remove colony 57 due to accidental death and add column to indicate all the queens eventually died.
+
+```{r}
+queen_surv <- queen_surv [queen_surv$colony_number != "57", ]
+
+queen_surv$queen_death <- 1
+```
+
+Begin the analysis. Attempt to start with:
+
+col_surv ~ treatment + worker_num + wax_moth + worker_num:treatment + wax_moth:treatment + (1 | batch/triad)
+
+```{r}
+library(survival)
+library(coxme)
+
+cfit1 <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + number_of_workers_at_exposure_start + wax_moth + 
+                 number_of_workers_at_exposure_start:treatment + wax_moth:treatment + (1 | block/triad),
+               data=queen_surv)
+
+summary(cfit1)
+
+# model selection
+cfit2 <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + number_of_workers_at_exposure_start + wax_moth + 
+                 number_of_workers_at_exposure_start:treatment + (1 | block/triad),
+               data=queen_surv)
+
+anova(cfit1, cfit2)
+
+cfit3 <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + number_of_workers_at_exposure_start + wax_moth + wax_moth:treatment + (1 | block/triad),
+               data=queen_surv)
+
+anova(cfit1, cfit3)
+
+# dropped wax_moth:treatment
+cfit4 <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + number_of_workers_at_exposure_start + wax_moth + (1 | block/triad),
+               data=queen_surv)
+
+anova(cfit2, cfit4)
+
+cfit5 <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + number_of_workers_at_exposure_start + 
+                 number_of_workers_at_exposure_start:treatment + (1 | block/triad),
+               data=queen_surv)
+
+anova(cfit2, cfit5)
+
+# drop wax_moth
+cfit6 <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + number_of_workers_at_exposure_start + (1 | block/triad),
+               data=queen_surv)
+
+anova(cfit5, cfit6)
+
+# 0.02266 in multiple rounds of hypothesis testing is not a strong result. Dropped. 
+cfit7 <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + (1 | block/triad),
+               data=queen_surv)
+
+anova(cfit6, cfit7)
+
+cfit8 <- coxme(Surv(queen_survival_days, queen_death) ~ number_of_workers_at_exposure_start + (1 | block/triad),
+               data=queen_surv)
+
+anova(cfit6, cfit8)
+
+# dropped number_of_workers_at_exposure_start
+cfit9 <- coxme(Surv(queen_survival_days, queen_death) ~ (1 | block/triad),
+               data=queen_surv)
+
+anova(cfit7, cfit9)
+
+# treatment not significant but kept in model due to experimental design.
+```
+
+Summary of treatment only model 
+
+```{r}
+cfit_treat <- cfit7
+
+summary(cfit_treat)
+
+# removing random effect has no effect on coefficients.
+cfit_treat_no_ran <- coxph(Surv(queen_survival_days, queen_death) ~ treatment,
+               data=queen_surv)
+
+summary(cfit_treat_no_ran)
+```
+
+The coefficients in a Cox regression relate to hazard; a positive coefficient indicates a worse prognosis and a negative coefficient indicates a protective effect of the variable with which it is associated.
+
+Model Validation: 
+
+zph() checks for proportionality assumption, by using the Schoenfeld residuals against the transformed time. Having very small p values indicates that there are time dependent coefficients which you need to take care of. That is to say, the proportionality assumption does not check linearity - the Cox PH model is semi parametric and thus makes no assumption as to the form of the hazard. The proportionality assumption is that the hazard rate of an individual is relatively constant in time, and this is what cox.zph() tests.
+
+A good [resource on checking assumptions of proportional hazards models](http://www.sthda.com/english/wiki/cox-model-assumptions#testing-proportional-hazards-assumption)
+
+```{r}
+# proportional hazards
+zp1 <- cox.zph(cfit_treat)
+zp1
+
+# plot(zp1[1], resid=TRUE)
+
+library(survminer)
+ggcoxzph(zp1)
+```
+
+Testing for influential observations - visualizing the deviance residuals. The deviance residual is a normalized transform of the martingale residual. These residuals should be roughly symmetrically distributed about zero with a standard deviation of 1.
+
+1. Positive values correspond to individuals that “died too soon” compared to expected survival times.
+2. Negative values correspond to individual that “lived too long”.
+3. Very large or small values are outliers, which are poorly predicted by the model.
+
+Unfortunately coxme objects can't be used for some of these check. Use cfit_treat_no_ran instead. Coefficients are the same as random effects model. 
+
+```{r}
+ggcoxdiagnostics(cfit_treat_no_ran, type = "deviance",
+                 linear.predictions = FALSE, ggtheme = theme_bw())
+```
+
+The dfbeta plot shows the effect dropping an observation has on the coefficients. Show there are two points that affect flup and sivanto coefficients respectively. Removing either only reduces the effect of the respective treatment group. Also, I have no reason to remove these observations from an experimental standpoint. Therefore, leave them in the analysis. 
+
+```{r}
+ggcoxdiagnostics(cfit_treat_no_ran, type = "dfbeta",
+                 linear.predictions = FALSE, ggtheme = theme_bw())
+```
+
+Linearity not an issue as there are no continuous variables. 
+
+KM plots
+
+```{r}
+library(survminer)
+
+# log rank test between KM survival curves.
+# surv <- Surv(time = queen_surv$queen_survival_days, event = queen_surv$queen_death)
+# survdiff(surv ~ queen_surv$treatment)
+
+# risk.table = TRUE,  risk.table.height = 0.25
+
+fit1 <- survfit(Surv(queen_survival_days, queen_death) ~ treatment, data=queen_surv)
+
+# for prettier graphs
+p <- ggsurvplot(fit1,
+                data = queen_surv,
+                conf.int = TRUE,
+                palette = c("#117733", "#332288", "#AA4499"),
+                legend.labs = c("Control", "FPF", "Sivanto"),
+                xlab = "Time (days)",
+                ylab = "Probability of Queen Survival",
+                legend.title = "",
+                title = "Queen Survival")
+
+p <- p + theme_survminer(font.main = c(24, "bold", "black"),
+                         font.x = c(18, "bold", "black"),
+                         font.y = c(18, "bold", "black"),
+                         font.tickslab = c(16, "plain", "black"),
+                         font.legend = c(16, "plain", "black"))
+
+p
+```
+
+```{r}
+final_model <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + (1 | block) + (1 | campus_location),
+               data=queen_surv)
+
+summary(final_model)
+```

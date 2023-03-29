@@ -588,7 +588,7 @@ as_draws_df(m_nb) %>%
 
 Trankplots look well mixed. 
 
-Remember adapt_delta increases the acceptance rate in warmup. Stan’s target acceptance rate is controlled by the adapt_delta control parameter.The ulam default is 0.95, which means that it aims to attain a 95% acceptance rate. It tries this during the warmup phase,adjusting the step size of each leap frog step. When adapt_delta is set high,it results in a smaller step size,which means a more accurate approximation of the curved surface. It can also mean slower exploration of the distribution. Increasing adapt_delta will often, but not always, help with divergent transitions.
+Remember adapt_delta increases the acceptance rate in warmup. Stan’s target acceptance rate is controlled by the adapt_delta control parameter.The ulam default is 0.95, which means that it aims to attain a 95% acceptance rate. It tries this during the warmup phase, adjusting the step size of each leap frog step. When adapt_delta is set high, it results in a smaller step size, which means a more accurate approximation of the curved surface. It can also mean slower exploration of the distribution. Increasing adapt_delta will often, but not always, help with divergent transitions.
 
 Up to this point, apart for some autocorrelation for the intercept and 2 sd terms (probably problematic because only 4/5 groups respectively), everything seems to be working. 
 
@@ -632,7 +632,7 @@ exp(μ + σ^2 / 2)
 exp(0 + 0.5^2 / 2)
 ```
 
-So if give me prior a mean of appoximately 50, this can be achieved with a prior of Normal(4, 0.3). Use the chunk below to visualise how changing the parameters of a log normal distribution affects the shape. 
+So if i want a prior with a mean of approximately 50, this can be achieved with a prior of Normal(4, 0.3). Use the chunk below to visualise how changing the parameters of a log normal distribution affects the shape. 
 
 ```{r}
 library(wesanderson)
@@ -730,7 +730,7 @@ Visualise the shapes for each scale of worker number and check the priors.
 
 Think about how to define the b prior (how treatment:wax_moth affects the grand mean). 
 
-What is the effect of changing the parameters for c, the slopes?
+What is the effect of changing the priors for c, the slopes?
 
 
 

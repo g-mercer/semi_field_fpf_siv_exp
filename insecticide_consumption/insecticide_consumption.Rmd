@@ -76,7 +76,7 @@ dotchart(insecticide_consumption$summed_consumption,
          xlab = "Consumption (µg)", main = "Cleveland dotplot", pch = insecticide_consumption$clevelandcode)
 ```
 
-There does not appear to be any obvious outliers. Maybe consumption is slightly lower for sivanto than the other two treatment groups?
+There does not appear to be any obvious outliers. Maybe consumption is slightly lower for sivanto than the other treatment group?
 
 Have a look at some boxplots
 
@@ -88,6 +88,7 @@ boxplot(summed_consumption ~ treatment,
 ```
 
 Also want to show consumption vs number_of_workers_exposure_start for each treatment.
+
 ```{r}
 # by treatment
 coplot(summed_consumption ~ number_of_workers_at_exposure_start | treatment, data = insecticide_consumption)
@@ -109,7 +110,7 @@ library(nlme)
 
 # use this for the better resid vs fitted plot
 M1 <- lm(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
-          data = insecticide_consumption, method = "REML")
+          data = insecticide_consumption)
 
 # unhash this for the summary
 summary(M1)
@@ -208,13 +209,13 @@ coplot(E3 ~ number_of_workers_at_exposure_start | treatment,
        ylab = "Normalised Residuals", data = insecticide_consumption)
 ```
 
-The cone shape pattern in the residual vs fitted has gone. Pick varPower as the AIC is slightly lower. Check to see if block/colony do anything. 
+The cone shape pattern in the residual vs fitted has gone. Pick varPower as the AIC is slightly lower. Check to see if block does anything. 
 
 ```{r}
 # standardised residuals for M1 vs triad
 E_standard <- resid(M1, type = "normalized")
 
-boxplot(E_standard ~ triad, data = insecticide_consumption, axes = TRUE,
+boxplot(E_standard ~ block, data = insecticide_consumption, axes = TRUE,
         cex.axis=0.75,
         ylab = 'Standardized residuals')
 abline(0,0)
@@ -225,7 +226,7 @@ Perform the test to see if the random intercept should be included.
 ```{r}
 M4 <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
               data = insecticide_consumption,
-              random =~ 1 | block/triad, method = "REML",
+              random =~ 1 | block, method = "REML",
               weights = varPower(form =~ number_of_workers_at_exposure_start))
 
 summary(M4)
@@ -268,12 +269,20 @@ M2a <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start,
           weights = varPower(form =~ number_of_workers_at_exposure_start))
 
 summary(M2a)
+
+# with block as random effect
+M2a_ran <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start,
+              data = insecticide_consumption,
+              random =~ 1 | block, method = "REML",
+              weights = varPower(form =~ number_of_workers_at_exposure_start))
+
+summary(M2a_ran)
 ```
 
-Have a look at the residual plots
+Have a look at the residual plots.
 
 ```{r}
-E2a <- resid(M2a, type = "normalized")
+E2a <- resid(M2a_ran, type = "normalized")
 
 # plot residual vs fitted
 plot(M2a, which = c (1))
@@ -296,91 +305,76 @@ coplot(E2a ~ number_of_workers_at_exposure_start | treatment,
 qqnorm(M2a)
 ```
 
-Now plot the model predictions with the data.
+Use M2a_ran for visualisations as this includes block, which is part of the experimental design.
+
+Namely, if you set level to 0 you get the predictions for which the random effects are set to zero. In the case of linear mixed models, these correspond to population predictions.
+
+Also I don't think the varPower variance structure is required
 
 ```{r}
-# redefine as M_final so I can recycle code from other markdowns
-M_final <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start,
-          data = insecticide_consumption, method = "REML",
-          weights = varPower(form =~ number_of_workers_at_exposure_start))
+# redefine
+final_model <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start,
+              data = insecticide_consumption,
+              random =~ 1 | block, method = "REML",
+              weights = varPower(form =~ number_of_workers_at_exposure_start))
 
-# create a plot to show this
-# plot the model predictions all on one graph
-plot(insecticide_consumption$number_of_workers_at_exposure_start,
-     insecticide_consumption$summed_consumption,
-     type="n",
-     xlab = "Starting Worker Number",
-     ylab = " Consumption")
+# summary(final_model)
 
-# sorts colonies according to number_of_workers_at_exposure_start
-I1 <- order(insecticide_consumption$number_of_workers_at_exposure_start)
-treatment <- insecticide_consumption$treatment [I1] #Use this in remaining code
-starting_worker_number <- sort(insecticide_consumption$number_of_workers_at_exposure_start) #Use this in remaining code
+# calculate standard error for each point. 
+# Design matrix for our observations
+xmat <- model.matrix(~ treatment + number_of_workers_at_exposure_start, data=insecticide_consumption)
 
-for (i in 1:length(unique(insecticide_consumption$treatment))) {
-  
-  df <- data.frame(number_of_workers_at_exposure_start = starting_worker_number [treatment == unique(insecticide_consumption$treatment) [i] ],
-                 treatment = as.factor(unique(insecticide_consumption$treatment) [i]))
-  
-  P <- predict(M_final, newdata = df)
-  
-  lines(df$number_of_workers_at_exposure_start, P, lty = 2)
-}
+# Regression coefficients
+# betahat <- coef(final_model)
 
-text(insecticide_consumption$number_of_workers_at_exposure_start, insecticide_consumption$summed_consumption, insecticide_consumption$treatment, cex = 0.9)
-```
+# Predictions
+insecticide_consumption$predictions <- predict(final_model, level = 0)
+# cbind(head(xmat%*%betahat), head(predictions))
 
-Add confidence bands around the lines
+# Sigma^
+Sigmahat <- vcov(final_model)
 
-```{r}
-# create a plot to show this
-# plot the model predictions all on one graph
-plot(insecticide_consumption$number_of_workers_at_exposure_start,
-     insecticide_consumption$summed_consumption,
-     type="n",
-     xlab = "Starting Worker Number",
-     ylab = " Consumption")
+# var/cov(beta0 + beta1*X)
+varcovEYhat <- xmat%*%Sigmahat%*%t(xmat)
 
-# sorts colonies according to number_of_workers_at_exposure_start
-I1 <- order(insecticide_consumption$number_of_workers_at_exposure_start)
-treatment <- insecticide_consumption$treatment [I1] #Use this in remaining code
-starting_worker_number <- sort(insecticide_consumption$number_of_workers_at_exposure_start) #Use this in remaining code
+# Pull off the diagonal elements and take their sqrt to 
+# get SEs that quantify uncertainty associated with the line
+SEline <- sqrt(diag(varcovEYhat))
 
-for (i in 1:length(unique(insecticide_consumption$treatment))) {
+# Confidence interval for the mean
+insecticide_consumption$upconf <- insecticide_consumption$predictions + 1.96 * SEline
+insecticide_consumption$lowconf <- insecticide_consumption$predictions - 1.96 * SEline
+
+treatment_levs <- unique(insecticide_consumption$treatment)
+
+treatment_preds_df <- tibble()
+
+for (i in 1:length(treatment_levs)) {
   
-  df <- data.frame(number_of_workers_at_exposure_start = starting_worker_number [treatment == unique(insecticide_consumption$treatment) [i] ],
-                 treatment = as.factor(unique(insecticide_consumption$treatment) [i]))
+  # order predictions according to treatment
+  treatment_preds <- insecticide_consumption [insecticide_consumption$treatment == treatment_levs [i],]
   
-  P <- predict(M_final, newdata = df)
+  # sort values by number of workers size
+  treatment_preds <- treatment_preds [order(treatment_preds$number_of_workers_at_exposure_start),]
   
-  lines(df$number_of_workers_at_exposure_start, P, lty = 1)
-  
-  # using the equation for calculating the CI at point x, output confidence band values
-  ci_lower <- c()
-  
-  ci_upper <- c()
-  
-  for (j in 1:nrow(df)) {
-    
-    # eqn
-     ci <- qt(p=0.025, df=nrow(df)-2, lower.tail=F) * summary(M_final)$sigma * ((1/nrow(df)) + (df [j, 1]-mean(df$number_of_workers_at_exposure_start))^2 / ((nrow(df)-1) * sd(df$number_of_workers_at_exposure_start)^2))^0.5
-     
-     ci_u <-P [j] + ci
-    
-     ci_l <-P [j] - ci
-     
-     ci_lower [j] <- ci_l
-     
-     ci_upper [j] <- ci_u
-  }
-  
-  # add dashed lines for confidence bands
-  lines(df$number_of_workers_at_exposure_start, ci_lower, lty = 'dashed', col = 'black')
-  lines(df$number_of_workers_at_exposure_start, ci_upper, lty = 'dashed', col = 'black')
+  treatment_preds_df <- rbind(treatment_preds_df, treatment_preds)
   
 }
 
-text(insecticide_consumption$number_of_workers_at_exposure_start, insecticide_consumption$summed_consumption, insecticide_consumption$treatment, cex = 0.9)
-```
+model_preds <- ggplot() + 
+      geom_point(data = insecticide_consumption, aes(x = number_of_workers_at_exposure_start, y = summed_consumption, color = treatment)) +
+      geom_line(data = treatment_preds_df, aes(x = number_of_workers_at_exposure_start, y = predictions, group = treatment, color = treatment)) +
+      geom_ribbon(data = treatment_preds_df, aes(x = number_of_workers_at_exposure_start, y = predictions, ymin = lowconf, ymax = upconf,
+                                              group = treatment, color = treatment, fill = treatment), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#332288", "#AA4499"), name = "Treatment", labels = c("FPF", "Sivanto")) +
+      scale_fill_manual(values=c("#332288", "#AA4499"), name = "Treatment", labels = c("FPF", "Sivanto")) +
+      xlab("Starting Worker Number") +
+      ylab("Insecticide Consumption (µg)") +
+      ggtitle("Aggregate insecticide consumption during the exposure window differed between treatment groups")
 
+model_preds
+
+```
 

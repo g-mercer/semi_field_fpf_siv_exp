@@ -1,0 +1,892 @@
+---
+title: "Reproductive Number"
+author: "Guy Mercer"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+Import
+
+```{r}
+male_num <- read.csv("input/total_male_number.csv")
+```
+
+Remove colony 57 as male number was not calculated (killed the queen by
+mistake so excluded).
+
+```{r}
+male_num <- male_num [male_num$colony_number != "57",]
+```
+
+Check all the variables are in the right class.
+
+```{r}
+library(tidyverse)
+
+class_check <- tibble()
+
+for (i in 1:ncol(male_num)) {
+  
+  class <- class(male_num [, i])
+  
+  class_check [i, 1] <- class
+  
+  class_check [i, 2] <- colnames(male_num [i])
+}
+
+# they are not all in the correct class. Swap integer to numeric and factor where suitable.
+male_num$colony_number <- as.factor(male_num$colony_number)
+male_num$total_reproductive_output <- as.numeric(male_num$total_reproductive_output)
+male_num$total_male_number <- as.numeric(male_num$total_male_number)
+male_num$block <- as.factor(male_num$block)
+male_num$triad <- as.factor(male_num$triad)
+male_num$number_of_workers_at_exposure_start <- as.numeric(male_num$number_of_workers_at_exposure_start)
+male_num$time_to_egg_laying <- as.numeric(male_num$time_to_egg_laying)
+male_num$time_to_6_workers <- as.numeric(male_num$time_to_6_workers)
+male_num$time_to_exposure_start <- as.numeric(male_num$time_to_exposure_start)
+male_num$queen_capture_day <- as.numeric(male_num$queen_capture_day)
+male_num$queen_survival_days <- as.numeric(male_num$queen_survival_days)
+male_num$campus_location <- as.factor(male_num$campus_location)
+male_num$rearing_location <- as.factor(male_num$rearing_location)
+male_num$wax_moth <- as.factor(male_num$wax_moth)
+male_num$treatment <- as.factor(male_num$treatment)
+
+# rename variables first to make life easier
+colnames(male_num) <- c("col_num", "repro_num", "male_num", "block", "treatment", "triad",
+                        "camp_loc", "rear_loc", "workers", "TTEL", "TT6W", "TTES", "QCD",
+                        "wax_moth", "queen_surv")
+
+```
+
+My project is an experiment. This more than anything determines the variables I should include in the model. My experimental design indicates:
+
+male_number \~ treatment + starting_worker_number + (1\|block/triad) + (1\|campus_location)
+
+Additionally, two other variables may be important - wax_moth and time to egg laying
+
+Wax Moth - If a colony got infested with wax moth once placed in the field this could have reduced male output, depending on when in the colony cycle the infestation occurred.
+
+Time to Egg Laying - This variable is less clear but the time it took the queen to lay eggs may be indicative of their underlying fitness. I doubt this is going explain male number.
+
+To make everything simpler, remove all the other variables. I can justify omitting every other variable:
+
+Queen Capture Date - No clear biological mechanism to associate this with colony male number output
+
+Time to Exposure Start - Unsuitable as different numbers of workers were present for each colony at this timepoint.
+
+Time to 6 Workers - Workload when queen rearing stage overlapped with experimental stage resulted in this variable being inaccurate.
+
+Rearing Location - Conditions were between 26-28 degrees and 50-60% humidity in both rooms.
+
+Reproductive Number - So few queens this is essentially the same as male number.
+
+Queen Survival - This was included to explain the false zeros in my dataset. Although interesting this isn't the aim of the study. Characterising that there are false zeros in enough (intercept only binomial process in zero inflated model).
+
+Starting Worker Number - Is not an explanatory variable of interest. However, it will have a large effect on male_number so has to be included in some form. I considered including it as an offset variable but that assumes that the rate is constant, which may not be true (if anything this would not be true, adding one worker to a smaller colony would have a larger effect than adding one worker to a large colony, therefore rate is not constant). All the examples in statistical rethinking have a clearer relationship. For example, counts per day (day vs week recording), area of sampling, volume of sampling (Zuur).
+
+Campus Location - The experiment was designed so both treatment and block were evenly distributed within campus location. The effect of campus location should therefore be balanced for each treatment group. 
+
+So my starting model will be:
+
+male_number \~ treatment + starting_worker_number + wax_moth + TTEL + (1\|block/triad) + (1\|campus_location)
+
+with the suspicion that TTEL will not have much of an effect and can probably be dropped.
+
+Interaction terms are another hurdle. Treatment could negatively interact with starting worker number (as starting worker number increases the effect of treatment decreases) and positively interact with wax moth (the insecticide treatment groups could have a greater effect when wax moth is present due to synergy)
+
+adding in these consideration I end up with:
+
+male_number \~ treatment + log(starting_worker_number) + wax_moth + log(TTEL) + treatment:log(starting_worker_number) + treatment:wax_moth + (1\|block/triad) + (1\|campus_location)
+
+There is also the annoyance that when starting_worker_number = 0 male_number = 0 (a queen, as far as I'm aware always produces workers first, if she never produces workers she'll never go on to produce males). The interaction term, although not included for this purpose, will help tackle this, as well as centring worker number. 
+
+Why log(starting_worker_number) and log(TTEL) in the model. This creates a more realistic relationship between male_number and the two variables. For example, biologically it is likely that increasing starting_worker_number (SWN) by one at small values of SWN has a larger effect on male_number than increasing SWN by one at high values of SWN. Once, say SWN = 20, the effect of having more workers at the beginning is minimal (25 not much better than 20). Contrast that from going from 5 -\> 10 SWN, which is double and would really increase likelihood of survival and male production once placed in field. This what using log(starting_worker_number) in model represents. The plots below show this graphically.
+
+The first plot shows the relationship between worker number and male number. This is roughly linear. Because this is count data a poisson or NB model will model log(male number) ~ worker number, shown in plot 2. This isn't as linear anymore. By modelling log(male number) ~ log(worker number), we achieve a better linear relationship in the poisson/nb model, which when expressed as male number ~ e^log(worker_number) has more of an exponential shape. 
+
+```{r}
+# untransformed starting worker number
+male_num$workers_ut <- male_num$workers
+
+# simple plot of worker vs male number
+plot(x = male_num$workers_ut, y = male_num$male_num)
+with(subset(male_num,male_num>0), lines(lowess(male_num~workers_ut)))
+
+# plot of worker on log scale vs male number
+plot(x = male_num$workers_ut, y = male_num$male_num, log = "y")
+with(subset(male_num,male_num>0), lines(lowess(male_num~workers_ut)))
+
+# plot of worker on log scale vs male number on log scale
+plot(x = male_num$workers_ut, y = male_num$male_num, log = "xy")
+with(subset(male_num,male_num>0), lines(lowess(male_num~workers_ut)))
+
+# plot of worker vs male number on log scale
+plot(x = male_num$workers_ut, y = male_num$male_num, log = "x")
+with(subset(male_num,male_num>0), lines(lowess(male_num~workers_ut)))
+```
+
+Two important hurdles to navigate are whether I require a NB (gamma-poisson) and if my data is zero inflated. From my previous attempt at tackling this dataset I am pretty sure they are required. However, I need to attempt this again.
+
+------------------------------------------------------------------------------
+
+Data Exploration
+
+Look for outliers in the response and explanatory variables.
+
+Sort out the cleveland dotplot encoding.
+
+```{r}
+# for a cleveland dotplot to work treatment has to be coded 1-3. 
+male_num$clevelandcode <- 0 
+
+for (i in 1:nrow(male_num)) {
+  
+  if (male_num$treatment [i] == "control") {
+    
+    male_num$clevelandcode [i] <- 1
+    
+  }
+  
+  if (male_num$treatment [i] == "flup") {
+    
+    male_num$clevelandcode [i] <- 2
+    
+    }
+  
+  if (male_num$treatment [i] == "sivanto") {
+    
+    male_num$clevelandcode [i] <- 3
+    
+    }
+  
+}
+
+# should be numeric already anyway
+male_num$clevelandcode <- as.numeric(male_num$clevelandcode)
+```
+
+Produce some cleveland dotplots.
+
+```{r}
+op <- par(mfrow = c(4, 2), mar = c(3, 3, 3, 1))
+
+dotchart(male_num$male_num, main = "Male Number", group = male_num$clevelandcode)
+plot(0, 0, type = "n", axes = FALSE)
+dotchart(male_num$workers, main = "Workers At Start", group = male_num$clevelandcode)
+dotchart(male_num$TTEL, main = "TTEL", group = male_num$clevelandcode)
+# dotchart(male_num$TT6W, main = "TT6W", group = male_num$clevelandcode)
+# dotchart(male_num$TTES, main = "TTES", group = male_num$clevelandcode)
+# dotchart(male_num$QCD, main = "Queen Capture Day", group = male_num$clevelandcode)
+# dotchart(male_num$queen_surv, main = "Queen Survival", group = male_num$clevelandcode)
+
+par(op)
+```
+
+There is a small degree of skew for workers at start but there aren't any inputting errors. Transform to log(workers)
+
+```{r}
+male_num$workers <- log(male_num$workers)
+```
+
+```{r}
+dotchart(male_num$workers, main = "Workers At Start", group = male_num$clevelandcode)
+```
+
+```{r}
+# sources the functions required.
+source("~/local_package_source/HighstatLibV10.R")
+
+Z <- cbind(male_num$male_num, male_num$workers,
+           male_num$TTEL)
+
+colnames(Z) <- c("Male Number", "log(Workers at Start)", "TTEL")
+
+pairs(Z, lower.panel = panel.smooth2,
+upper.panel = panel.cor, diag.panel = panel.hist)
+```
+
+As there are only 59 observations, only 5/6 explanatory variables can feasibly be included (Zuur p395). As this project was experimental, not exploratory, certain variables will be placed in the model. The model below is the base of any final model as these variables were part of the experimental design. 
+
+log(male number) ~ treatment + workers + (1|block/triad) 
+
+With this is mind, TT6W and TTES were removed as TT6W is inaccurate and TTES is unsuitable as different numbers of workers were present for each colony at this timepoint. For TTEL this represents the same state for each colony so could be indicative of underlying queen fitness, so retain for now. Queen capture date and rearing location were dropped on the grounds of minimal biological relevance. Campus location was evenly distributed among treatment group so was also dropped.
+
+This leaves:
+
+log(male number) ~ treatment + log(workers) + TTEL + wax_moth + (1|block/triad)
+
+Next, biologically meaningful two way interactions need to be considered. treatment:wax_moth could be a possibility: if treatment is having an effect it may make colonies more susceptible to wax moth infestation. treatment:workers could also occur: colonies that were smaller at the beginning of treatment could have been more susceptible.
+
+This leads to:
+
+log(male number) ~ treatment + log(workers) + TTEL + wax_moth + treatment:wax_moth + treatment:log(workers) + (1|block/triad)
+
+Look at boxplots for treatment, wax_moth, treatment:wax_moth, block and triad
+
+```{r}
+boxplot(male_num ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Male Number Vs Treatment", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Boxplot of Male Number Vs Wax Moth", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ wax_moth:treatment,
+        varwidth = TRUE, xlab = "Wax Moth:Treatment",
+        main = "Boxplot of Male Number Vs Wax Moth:Treatment", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Boxplot of Male Number Vs Block", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Boxplot of Male Number Vs Triad", 
+        ylab = "Number of males", data = male_num)
+
+```
+
+Triad and block look important, treatment and wax moth look to have no effect. wax_moth:treatment is hard to interpret due to the low sample size for some combinations (Y:Sivanto = 3).
+
+Centre log(starting worker number) and TTEL to aid intercept interpretation.
+
+```{r}
+mean_log_workers <- mean(male_num$workers)
+
+male_num$workers <- male_num$workers - mean(male_num$workers)
+
+male_num$TTEL <- male_num$TTEL - mean(male_num$TTEL)
+```
+
+Have a look at linearity once log transformation on y axis applied. Appears to be approximately linear.
+
+```{r}
+hist(male_num$workers)
+
+# now for the scatterplot
+plot(male_num~workers, male_num, log="y")
+with(subset(male_num,male_num>0), lines(lowess(male_num~workers)))
+
+# now for the scatterplot
+plot(male_num~TTEL, male_num, log="y")
+with(subset(male_num,male_num>0), lines(lowess(male_num~TTEL)))
+```
+
+Approach is to fit the beyond optimal model, find the appropriate distribution (poisson, NB or ZINB) (use a frequency plot to interrogate the need for zero inflation as well as simulation to determine the number of zeros expected from a NB distribution), then perform model selection to probe the importance of the TTEL, wax_moth, treatment:wax_moth and treatment:workers terms.
+
+Are random effects improvements?
+
+Start with a poisson model, although this will probably be overdispersed.
+
+```{r}
+library(glmmTMB)
+
+f1 <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:workers + treatment:wax_moth + (1|block/triad))
+
+# poisson
+m_poisson_full <- glmmTMB(f1,
+              data = male_num,
+              family = "poisson")
+
+summary(m_poisson_full)
+```
+
+Check for overdispersion using the pearson dispersion statistic.
+
+```{r}
+dispfun <- function(m) {
+    r <- residuals(m,type="pearson")
+    n <- df.residual(m)
+    dsq <- sum(r^2)
+    c(dsq=dsq,n=n,disp=dsq/n)
+}
+
+sapply(list(poisson=m_poisson_full),dispfun)
+```
+21.97 is highly overdispersed. Is this apparent or real overdispersion? Apparent overdispersion is due to:
+
+1. missing covariates or interactions
+2. outliers in the response variable
+3. non-linear effects of covariates entered as linear terms in the systematic part of the model
+4. choice of the wrong link function
+
+I am quite confident that there were no extreme outliers in the response variable or non-linear effects. I can't see how my choice of link function is incorrect, especially as male_num vs log(workers) appears weakly exponential. Missing covariates or interactions may be a problem but all the covariates excluded were either not biologically relevant (TTES, QCD) or had been accounted for in the experimental design (camp_loc).
+
+Real overdispersion exists when we cannot identify any of the previous mentioned causes. This can be because the variation in the data really is larger than the mean. Or there may be many zeros (which may, or may not, cause overdispersion), clustering of observations, or correlation between observations.
+
+I think I have real overdispersion. As φ is larger than 15 or 20, a quasi-poisson approach is not recommended. Instead attempt a negative binomial GLM or zero-inflated model. 
+
+Look at a frequency plot for the number of zeros. 
+
+```{r}
+plot(table(male_num$male_num))
+```
+
+How many zeros would be expected from a negative binomial distribution?
+
+```{r}
+# nb
+m_nb_full <- glmmTMB(f1,
+              data = male_num,
+              family = "nbinom2")
+
+summary(m_nb_full)
+
+# dispersion parameter of 1.36
+```
+
+Probability of a true zero from a NB distribution = (k/(µ+k))^k. The mean for male number is 65.38983, sample size is 59 and k for the previously fitted negative binomial is (1.36). Probability of true zeros is therefore 0.005016035 * 59 = 0.2959461. So there are more zeros than expected.
+
+What is the pearson dispersion statistic for this model?
+
+```{r}
+sapply(list(nb=m_nb_full),dispfun)
+```
+
+Reasons for underdispersion are:
+
+1. the model is fitting a couple of outliers rather too well
+2. there are too many explanatory variables or interactions in the model (overfitting). 
+
+If neither of these is the case, then the consensus is not to correct for underdispersion. There may well be too many explanatory variables in the model as this the beyond optimal model.
+
+What about a ZINB?
+
+```{r}
+# zinb
+m_zinb_full <- glmmTMB(f1,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+summary(m_zinb_full)
+```
+
+The ZINB has NA for the AIC. The variances of the random effects are very small. 
+
+What does the extremely small variation for the random effects mean?
+
+(bolker explanation)[https://rpubs.com/bbolker/6226]
+(stack-overflow-answer)[https://stats.stackexchange.com/questions/115090/why-do-i-get-zero-variance-of-a-random-effect-in-my-mixed-model-despite-some-va]
+
+For small sample sizes and noisy data, especially for small numbers of random-effect levels, the maximum likelihood (ML) or restricted maximum likelihood (REML) estimate of the variance may be precisely zero. (I put an example of this on rpubs.com.) The ML/REML estimate might be biased, but the solution that lmer is returning is the right answer to the technical question posed. 
+
+In a broader sense, these results mean that the data are consistent with all of the observed variance coming from residual or among-observation variation, and none from among-group variation. This is a little stronger than a classical ANOVA/method-of-moments (MM) result stating that the among-group variation is not statistically different from zero – in this case the estimate is zero – but it's the same general situation. (For standard experimental designs, the MM estimate is never exactly zero – although this does happen e.g. in population genetic studies, where MM estimates of the dominance variance may even be negative; there is a stream of papers in the population genetic literature arguing about the proper approach in this case.)
+
+My interpretation is the random effect structure doesn't account for much in the model. If the random effect is dropped none of the coefficients drastically change.
+
+```{r}
+f2 <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:workers + treatment:wax_moth)
+
+m_zinb_full_no_ran <- glmmTMB(f2,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+summary(m_zinb_full_no_ran)
+```
+
+Is the random intercept needed or can it be dropped? Compare this more formally with a likelihood ratio test. 
+
+```{r}
+f2 <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:workers + treatment:wax_moth)
+
+m_zinb_full_no_ran <- glmmTMB(f2,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=TRUE)
+
+m_zinb_full <- glmmTMB(f1,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=TRUE)
+
+library(lmtest)
+
+lrtest(m_zinb_full_no_ran, m_zinb_full)
+```
+
+The test above indicates that the model with the random effect is no better than the one without it. So drop it for the sake of simplicity.
+
+```{r}
+f1 <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:workers + treatment:wax_moth)
+
+# zinb
+m_zinb_full <- glmmTMB(f1,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+# nb
+m_nb_full <- glmmTMB(f1,
+              data = male_num,
+              family = "nbinom2")
+# poisson
+m_poisson_full <- glmmTMB(f1,
+              data = male_num,
+              family = "poisson")
+
+summary(m_zinb_full)
+```
+ Plugging the numbers from the above summary into the equation below suggests that essentially the probability of zeros is almost entirely due to false zeros (queen dying early seems to be related if queen_surv is modelled in the false zero binomial part of the model).
+
+μi = e^α+β1×Xi1+···+βq×Xiq
+
+πi = e^v/(1 + e^v) 
+
+f(yi = 0) = πi + ((1-πi)*(k/(μi + k))^k)
+
+Note: remember that E(Yi) = μi × (1 − πi) for a ZINB (or a ZIP) IMPORTANT FOR MODEL PREDICTIONS
+
+Look at the pearson statistic for this model
+
+```{r}
+sapply(list(zinb=m_zinb_full),dispfun)
+```
+
+Compare the AICs of the poisson, nb and zinb models
+
+```{r}
+AIC(m_poisson_full, m_nb_full, m_zinb_full)
+```
+
+AIC also supports the decision to go with the zero inflated model.
+
+Does campus location need to be included as a random effect? Even though treatment was balanced with respect to campus location within the experimental design I think it is worth checking. Below test indicates not (just).
+
+```{r}
+f1 <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:workers + treatment:wax_moth)
+
+f2 <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:workers + treatment:wax_moth + (1|camp_loc))
+
+m_zinb_full <- glmmTMB(f1,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=TRUE)
+
+m_zinb_full_camp_loc <- glmmTMB(f2,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1, 
+              REML=TRUE)
+
+lrtest(m_zinb_full, m_zinb_full_camp_loc)
+```
+
+Perform model selection on the fixed effects of the model.
+
+```{r}
+f1 <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:workers + treatment:wax_moth)
+
+# set REML=FALSE
+m_zinb_full <- glmmTMB(f1,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+f1 <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:workers + treatment:wax_moth)
+
+f1a <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:workers)
+
+f1b <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:wax_moth)
+
+f1c <- formula(male_num ~ treatment + wax_moth + workers + treatment:workers + treatment:wax_moth)
+
+
+m_zinb_a <- glmmTMB(f1a,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+m_zinb_b <- glmmTMB(f1b,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+m_zinb_c <- glmmTMB(f1c,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+library(lmtest)
+
+lrtest(m_zinb_full, m_zinb_a)
+lrtest(m_zinb_full, m_zinb_b)
+lrtest(m_zinb_full, m_zinb_c)
+
+# dropped treatment:wax_moth
+f1a <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:workers)
+
+f1aa <- formula(male_num ~ treatment + wax_moth + workers + TTEL)
+
+f1ab <- formula(male_num ~ treatment + wax_moth + workers + treatment:workers)
+
+f1ac <- formula(male_num ~ treatment + workers + TTEL + treatment:workers)
+
+m_zinb_aa <- glmmTMB(f1aa,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+m_zinb_ab <- glmmTMB(f1ab,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+m_zinb_ac <- glmmTMB(f1ac,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+lrtest(m_zinb_a, m_zinb_aa)
+lrtest(m_zinb_a, m_zinb_ab)
+lrtest(m_zinb_a, m_zinb_ac)
+
+# dropped treatment:workers
+f1aa <- formula(male_num ~ treatment + wax_moth + workers + TTEL)
+
+f1aaa <- formula(male_num ~ treatment + wax_moth + workers)
+
+f1aab <- formula(male_num ~ treatment + wax_moth + TTEL)
+
+f1aac <- formula(male_num ~ treatment + workers + TTEL)
+
+f1aad <- formula(male_num ~ wax_moth + workers + TTEL)
+
+m_zinb_aaa <- glmmTMB(f1aaa,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+m_zinb_aab <- glmmTMB(f1aab,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+m_zinb_aac <- glmmTMB(f1aac,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+m_zinb_aad <- glmmTMB(f1aad,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+lrtest(m_zinb_aa, m_zinb_aaa)
+lrtest(m_zinb_aa, m_zinb_aab)
+lrtest(m_zinb_aa, m_zinb_aac)
+lrtest(m_zinb_aa, m_zinb_aad)
+
+# dropped TTEL
+f1aaa <- formula(male_num ~ treatment + wax_moth + workers)
+
+f1aaaa <- formula(male_num ~ treatment + wax_moth)
+
+f1aaab <- formula(male_num ~ treatment + workers)
+
+f1aaac <- formula(male_num ~ wax_moth + workers)
+
+m_zinb_aaaa <- glmmTMB(f1aaaa,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+m_zinb_aaab <- glmmTMB(f1aaab,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+m_zinb_aaac <- glmmTMB(f1aaac,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+lrtest(m_zinb_aaa, m_zinb_aaaa)
+lrtest(m_zinb_aaa, m_zinb_aaab)
+lrtest(m_zinb_aaa, m_zinb_aaac)
+
+# dropped wax_moth 0.03 not a strong result during rounds of hypothesis testing.
+# left with variables selected through experimental design
+f1aaab <- formula(male_num ~ treatment + workers)
+
+f1aaaba <- formula(male_num ~ treatment)
+
+f1aaabb <- formula(male_num ~ workers)
+
+m_zinb_aaaba <- glmmTMB(f1aaaba,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+m_zinb_aaabb <- glmmTMB(f1aaabb,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+lrtest(m_zinb_aaab, m_zinb_aaaba)
+lrtest(m_zinb_aaab, m_zinb_aaabb)
+
+# treatment weakly significant but retain due to experimental design.
+```
+
+Final model is male_num ~ treatment + workers ZINB.
+
+```{r}
+final_model <- glmmTMB(male_num ~ treatment + workers,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+summary(final_model)
+```
+
+Model Validation. Plot the pearson residuals against each explanatory variable. No serious issues appear. 
+
+```{r}
+final_model_e <- residuals(final_model, type = "pearson")
+
+# vs workers 
+plot(x = male_num$workers, y = final_model_e)
+abline(0,0)
+
+# vs fitted
+plot(x = fitted(final_model), y = final_model_e)
+abline(0,0)
+
+# vs treatment 
+boxplot(final_model_e ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Pearson Residuals Vs Treatment", 
+        ylab = "Pearson Residuals", data = male_num)
+
+# vs block
+boxplot(final_model_e ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Boxplot of Pearson Residuals Vs Block", 
+        ylab = "Pearson Residuals", data = male_num)
+
+# vs camp_loc
+boxplot(final_model_e ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Boxplot of Pearson Residuals Vs Campus Location", 
+        ylab = "Pearson Residuals", data = male_num)
+```
+
+Compare observed and fitted values. There are two issues here: the zero values are fitted with high values, which alters the intercept. Secondly, there were 3 colonies that were very large and this couldn't be predicted by the model. Even if these are removed, however, predictive performance still isn't great (below). The model overpredicts for small values, then underpredicts for large values. I don't think this matters for my conclusion though, which is treatment had no convincing effect. Flup has a weakly significant stimulatory effect but this is dependent on if a NB or ZINB is selected. 
+
+The poor predictive performance of the model shows that the explanatory variables that underpin reproductive output are many and complex. One of these is the size of the colony in terms of worker number when the experiment began and this does explain some of the variance in the data. Treatment did not explain much of variance in the data. There must have been a variable or variables omitted from the experimental design that dictate(s) why the reproductive output of some colonies stayed unexpectedly small or became unexpectedly large in relation to predictions based on worker number and treatment alone. Most importantly, the effect of treatment, if there was one, was undetectable in this semi-field experimental design. Absence of evidence isn't evidence of absence, maybe if sample size had been tripled there may have been a detectable effect, but that was not a manageable workload. 
+
+```{r}
+male_number <- male_num$male_num
+
+fitted_values <- fitted(final_model)
+
+goodness_fit <- lm(fitted_values ~ male_number)
+
+summary(goodness_fit)
+
+# observed vs fitted
+plot(x = male_number, y = fitted_values)
+abline(goodness_fit)
+
+```
+
+```{r}
+# remove zeros
+male_number_0 <- male_number [-c(4,12,34)]
+fitted_values_0 <- fitted_values [-c(4,12,34)]
+
+goodness_fit_0 <- lm(fitted_values_0 ~ male_number_0)
+
+summary(goodness_fit_0)
+
+# observed vs fitted
+plot(x = male_number_0, y = fitted_values_0)
+abline(goodness_fit_0)
+
+# remove large colonies
+male_number_0_big <- male_number [-c(4,12,34,13,20,24)]
+fitted_values_0_big <- fitted_values [-c(4,12,34,13,20,24)]
+
+goodness_fit_0_big <- lm(fitted_values_0_big ~ male_number_0_big)
+
+summary(goodness_fit_0_big)
+
+# observed vs fitted
+plot(x = male_number_0_big, y = fitted_values_0_big)
+abline(goodness_fit_0_big)
+```
+
+Although it makes little difference to the results as the random effects are not significant, include them as they are part of the experimental design.
+
+```{r}
+final_model_random <- glmmTMB(male_num ~ treatment + workers + (1|block) + (1|camp_loc),
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+summary(final_model_random)
+```
+
+Predict the model output. 
+
+```{r}
+# predict male for each level of treatment
+D1_control <- data.frame(workers = seq(min(male_num$workers [male_num$treatment == "control"]),
+                                       max(male_num$workers [male_num$treatment == "control"]), length.out = 200),
+                         treatment = "control",
+                         block = NA,
+                         camp_loc = NA)
+
+ilink <- family(final_model_random)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_con <- setNames(as_tibble(predict(final_model_random,
+                                    D1_control,
+                                    se.fit = TRUE,
+                                    type = "link",
+                                    re.form = NA)[1:2]),
+                      c('fit_link','se_link'))
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_con <- mutate(ci_df_con,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+
+# --------------
+
+D1_flup <- data.frame(workers = seq(min(male_num$workers [male_num$treatment == "flup"]),
+                                    max(male_num$workers [male_num$treatment == "flup"]), length.out = 200),
+                         treatment = "flup",
+                         block = NA,
+                         camp_loc = NA)
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_flup <- setNames(as_tibble(predict(final_model_random,
+                                    D1_flup,
+                                    se.fit = TRUE,
+                                    type = "link",
+                                    re.form = NA)[1:2]),
+                      c('fit_link','se_link'))
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_flup <- mutate(ci_df_flup,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+
+# --------------
+
+D1_siv <- data.frame(workers = seq(min(male_num$workers [male_num$treatment == "sivanto"]),
+                                   max(male_num$workers [male_num$treatment == "sivanto"]), length.out = 200),
+                         treatment = "sivanto",
+                         block = NA,
+                         camp_loc = NA)
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_siv <- setNames(as_tibble(predict(final_model_random,
+                                    D1_siv,
+                                    se.fit = TRUE,
+                                    type = "link",
+                                    re.form = NA)[1:2]),
+                      c('fit_link','se_link'))
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_siv <- mutate(ci_df_siv,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (2 * se_link)),
+                right_lwr = ilink(fit_link - (2 * se_link)))
+```
+
+Plot the model output
+
+```{r}
+plot(male_num$workers, male_num$male_num, col=male_num$treatment)
+
+palette()
+
+# control
+lines(D1_control$workers, ci_df_con$fit_resp, lty = 1, col="black")
+lines(D1_control$workers, ci_df_con$right_upr, lty = 2, col="black")
+lines(D1_control$workers, ci_df_con$right_lwr, lty = 2, col="black")
+
+# flup
+lines(D1_flup$workers, ci_df_flup$fit_resp, lty = 1, col="#DF536B")
+lines(D1_flup$workers, ci_df_flup$right_upr, lty = 2, col="#DF536B")
+lines(D1_flup$workers, ci_df_flup$right_lwr, lty = 2, col="#DF536B")
+
+# siv
+lines(D1_siv$workers, ci_df_siv$fit_resp, lty = 1, col="#61D04F")
+lines(D1_siv$workers, ci_df_siv$right_upr, lty = 2, col="#61D04F")
+lines(D1_siv$workers, ci_df_siv$right_lwr, lty = 2, col="#61D04F")
+
+legend('topright', legend = levels(male_num$treatment), col = 1:3, cex = 0.8, pch = 1)
+
+```
+
+ggplot of the above
+
+```{r}
+# combine line predictions
+ggplot_lines_df <- rbind(cbind(D1_control, ci_df_con), cbind(D1_flup, ci_df_flup), cbind(D1_siv, ci_df_siv))
+
+model_preds <- ggplot() + 
+      geom_point(data = male_num, aes(x = workers, y = male_num, color = treatment)) +
+      geom_line(data = ggplot_lines_df, aes(x = workers, y = fit_resp, group = treatment, color = treatment)) +
+      geom_ribbon(data = ggplot_lines_df, aes(x = workers, y = fit_resp, ymin = right_lwr, ymax = right_upr,
+                                              group = treatment, color = treatment, fill = treatment), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#117733", "#332288", "#AA4499"), name="Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      scale_fill_manual(values=c("#117733", "#332288", "#AA4499"), name="Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      xlab("Centred Log(Starting Worker Number)") +
+      ylab("Male Number") +
+      ggtitle("Change in male output over starting worker number for each treatment")
+
+model_preds
+```
+
+Plot on untransformed worker number
+
+```{r}
+ggplot_lines_df$workers_ut <- exp(ggplot_lines_df$workers + mean_log_workers)
+
+model_preds_ut <- ggplot() + 
+      geom_point(data = male_num, aes(x = workers_ut, y = male_num, color = treatment)) +
+      geom_line(data = ggplot_lines_df, aes(x = workers_ut, y = fit_resp, group = treatment, color = treatment)) +
+      geom_ribbon(data = ggplot_lines_df, aes(x = workers_ut, y = fit_resp, ymin = right_lwr, ymax = right_upr,
+                                              group = treatment, color = treatment, fill = treatment), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#117733", "#332288", "#AA4499"), name="Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      scale_fill_manual(values=c("#117733", "#332288", "#AA4499"), name="Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      xlab("Starting Worker Number") +
+      ylab("Male Number") +
+      ggtitle("Change in male output over starting worker number for each treatment")
+
+model_preds_ut
+```
+

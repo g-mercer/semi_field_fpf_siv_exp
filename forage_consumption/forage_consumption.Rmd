@@ -111,6 +111,7 @@ Plot the residuals vs fitted, residuals vs number_of_workers_at_exposure_start a
 One point does look like an outlier, C17 (flup number_of_workers_at_exposure_start = 15). There is also reason to exclude this point as the queen died in the exposure period.
 
 At this point I am going to exclude C17. 
+
 ```{r}
 # remove C17
 sucrose_consumption <- sucrose_consumption [sucrose_consumption$colony_number != "17", ]
@@ -414,24 +415,24 @@ AIC(M1, M2, M3, M4, M5, M6)
 
 M1 is still the best model. M2, M5 and M6 improve standardized residual plots when grouping by treatment.
 
-See whether a random intercept is required for block/triad?
+See whether a random intercept is required for block?
 
 ```{r}
 # standardised residuals for M1 vs triad
 E_standard <- resid(M1, type = "normalized")
 
-boxplot(E_standard ~ triad, data = sucrose_consumption, axes = TRUE,
+boxplot(E_standard ~ block, data = sucrose_consumption, axes = TRUE,
         cex.axis=0.75,
         ylab = 'Standardized residuals')
 abline(0,0)
 ```
 
-This indicates triad should be included as a random intercept. 
+This indicates that block probably wont be necessary as a random intercept. 
 
 ```{r}
 M7 <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
               data = sucrose_consumption,
-              random =~ 1 | block/triad, method = "REML")
+              random =~ 1 | block, method = "REML")
 
 summary(M7)
 
@@ -440,7 +441,7 @@ anova(M1, M7)
 
 intraclass correlation for triad = StdDev Intercept^2 / (StdDev Intercept^2 + StdDev Residual^2), which is 7093^2 / ( 7093^2 + 20329^2) = 0.109. Therefore, intraclass correlation is low, which is good news for our effective sample size. Also, pretty sure this shows why the random intercept is not significant.
 
-Below shows the small effect on the standardized residuals of including block/triad as a random intercept.
+Below shows the small effect on the standardized residuals of including block as a random intercept.
 
 ```{r}
 par(mfrow=c(1,2)) 
@@ -448,17 +449,17 @@ par(mfrow=c(1,2))
 # standardized residuals for M7 vs triad
 E7 <- resid(M7, type = "normalized")
 
-boxplot(E7 ~ triad, data = sucrose_consumption, axes = TRUE,
+boxplot(E7 ~ block, data = sucrose_consumption, axes = TRUE,
         cex.axis=0.75)
 abline(0,0)
 
 # standardized residuals for M1 vs triad
-boxplot(E_standard ~ triad, data = sucrose_consumption, axes = TRUE,
+boxplot(E_standard ~ block, data = sucrose_consumption, axes = TRUE,
         cex.axis=0.75)
 abline(0,0)
 ```
 
-The conclusion then from attempting to define the random component of my model is neither a random intercept of batch/triad or any variance structure are a significant improvement on the original linear model. After determining the optimal fixed structure if there are odd things happening in the graphical validation plots I may revisit this. 
+The conclusion then from attempting to define the random component of my model is neither a random intercept of batch or any variance structure are a significant improvement on the original linear model. After determining the optimal fixed structure if there are odd things happening in the graphical validation plots I may revisit this. 
 
 Going into determining the optimal fixed structure my optimal model is this:
 
@@ -688,7 +689,7 @@ If you re-run the relevant sections above without C7 during the determining the 
 
 ```{r}
 # what if I remove C7 as it also appears to be a large outlier, even though I have no scientific grounds for removing it
-sucrose_consumption <- sucrose_consumption [sucrose_consumption$colony_number != "7", ]
+# sucrose_consumption <- sucrose_consumption [sucrose_consumption$colony_number != "7", ]
 
 # recall M1
 M1 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
@@ -805,3 +806,92 @@ abline(0, 0)
 So both datasets reach the same conclusion that treatment has no effect on consumption, as long as I discard the weekly significant interaction term, which is a judgement call. 
 
 Combine this with the fact that I had no biological reason to exclude C7 and the conclusion that treatment has no effect on sucrose consumption is compelling.
+
+Treatment should be included as it is part of the experimental design, as is block. 
+
+[gls standard error plots](https://fw8051statistics4ecologists.netlify.app/gls.html)
+
+The visualisation below ignores the random effect and return population level predictions. 
+
+```{r}
+final_model <- lme(summed_consumption ~ number_of_workers_at_exposure_start + treatment,
+          data = sucrose_consumption, method = "REML",
+          weights = varIdent(form= ~ 1 | treatment),
+          random = ~1 | block)
+
+# summary(final_model)$coeff
+
+# calculate standard error for each point. 
+# Design matrix for our observations
+xmat <- model.matrix(~ number_of_workers_at_exposure_start + treatment, data=sucrose_consumption)
+
+# Regression coefficients
+betahat<-coef(final_model)
+
+# Predictions
+sucrose_consumption$predictions <- predict(final_model, level = 0)
+# cbind(head(xmat%*%betahat), head(predictions))
+
+# Sigma^
+Sigmahat <- vcov(final_model)
+
+# var/cov(beta0 + beta1*X)
+varcovEYhat<-xmat%*%Sigmahat%*%t(xmat)
+
+# Pull off the diagonal elements and take their sqrt to 
+# get SEs that quantify uncertainty associated with the line
+SEline <- sqrt(diag(varcovEYhat))
+
+# Confidence interval for the mean
+sucrose_consumption$upconf <- sucrose_consumption$predictions + 1.96 * SEline
+sucrose_consumption$lowconf <- sucrose_consumption$predictions - 1.96 * SEline
+
+treatment_levs <- unique(sucrose_consumption$treatment)
+
+treatment_preds_df <- tibble()
+
+for (i in 1:length(treatment_levs)) {
+  
+  # order predictions according to treatment
+  treatment_preds <- sucrose_consumption [sucrose_consumption$treatment == treatment_levs [i],]
+  
+  # keep only the columns of interest
+  treatment_preds <- treatment_preds [, c(3,12,14,15,16)]
+  
+  # sort values by number of workers size
+  treatment_preds <- treatment_preds [order(treatment_preds$number_of_workers_at_exposure_start),]
+  
+  treatment_preds_df <- rbind(treatment_preds_df, treatment_preds)
+  
+}
+
+model_preds <- ggplot() + 
+      geom_point(data = sucrose_consumption, aes(x = number_of_workers_at_exposure_start, y = summed_consumption, color = treatment)) +
+      geom_line(data = treatment_preds_df, aes(x = number_of_workers_at_exposure_start, y = predictions, group = treatment, color = treatment)) +
+      geom_ribbon(data = treatment_preds_df, aes(x = number_of_workers_at_exposure_start, y = predictions, ymin = lowconf, ymax = upconf,
+                                              group = treatment, color = treatment, fill = treatment), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#117733", "#332288", "#AA4499"), name = "Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      scale_fill_manual(values=c("#117733", "#332288", "#AA4499"), name = "Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      xlab("Starting Worker Number") +
+      ylab("50% Sucrose Consumption (mg)") +
+      ggtitle("Aggregate sucrose consumption during the exposure window did not differ between treatment groups")
+
+model_preds
+```
+
+This shows, as earlier in the script, that block isn't doing anything. It still, however, should be included as it is part of the experimental design.
+
+```{r}
+final_model_block <- lme(summed_consumption ~ number_of_workers_at_exposure_start + treatment,
+          data = sucrose_consumption, method = "REML",
+          weights = varIdent(form= ~ 1 | treatment),
+          random = ~1 | block)
+
+summary(final_model_block)
+
+anova(final_model, final_model_block)
+```
+
+There is alot of waffle in this markdown. Remove the unnecessary parts when putting together my thesis. 
