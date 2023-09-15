@@ -1,6 +1,6 @@
 {
   "R": {
-    "Version": "4.2.1",
+    "Version": "4.2.3",
     "Repositories": [
       {
         "Name": "CRAN",
@@ -37,12 +37,12 @@
       "Repository": "CRAN",
       "Hash": "c814c35b0bc58613b4632c8acaf80b04"
     },
-    "GLMMadaptive": {
-      "Package": "GLMMadaptive",
-      "Version": "0.8-5",
+    "GGally": {
+      "Package": "GGally",
+      "Version": "2.1.2",
       "Source": "Repository",
       "Repository": "CRAN",
-      "Hash": "4d7af47d60066d049ead8d666ef05a21"
+      "Hash": "022f78c8698724b326f1838b1a98cafa"
     },
     "MASS": {
       "Package": "MASS",
@@ -172,10 +172,10 @@
     },
     "boot": {
       "Package": "boot",
-      "Version": "1.3-28",
+      "Version": "1.3-28.1",
       "Source": "Repository",
       "Repository": "CRAN",
-      "Hash": "0baa960e3b49c6176a4f42addcbacc59"
+      "Hash": "9a052fbcbe97a98ceb18dbfd30ebd96e"
     },
     "bridgesampling": {
       "Package": "bridgesampling",
@@ -263,10 +263,10 @@
     },
     "codetools": {
       "Package": "codetools",
-      "Version": "0.2-18",
+      "Version": "0.2-19",
       "Source": "Repository",
       "Repository": "CRAN",
-      "Hash": "019388fc48e48b3da0d3a76ff94608a8"
+      "Hash": "c089a619a7fae175d149d89164f8c7d8"
     },
     "colorspace": {
       "Package": "colorspace",
@@ -477,6 +477,13 @@
       "Source": "Repository",
       "Repository": "CRAN",
       "Hash": "15e9634c0fcd294799e9b2e929ed1b86"
+    },
+    "ggmcmc": {
+      "Package": "ggmcmc",
+      "Version": "1.5.1.1",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "50f1ceaa14bb8d8d8f2879f55e14ea42"
     },
     "ggplot2": {
       "Package": "ggplot2",
@@ -746,10 +753,10 @@
     },
     "mgcv": {
       "Package": "mgcv",
-      "Version": "1.8-40",
+      "Version": "1.8-42",
       "Source": "Repository",
       "Repository": "CRAN",
-      "Hash": "c6b2fdb18cf68ab613bd564363e1ba0d"
+      "Hash": "3460beba7ccc8946249ba35327ba902a"
     },
     "mime": {
       "Package": "mime",
@@ -926,13 +933,6 @@
       "Repository": "CRAN",
       "Hash": "8b93531308c01ad0e56d9eadcc0c4fcd"
     },
-    "pscl": {
-      "Package": "pscl",
-      "Version": "1.5.5",
-      "Source": "Repository",
-      "Repository": "CRAN",
-      "Hash": "c55158537b8c4754a8c3de3382f1a659"
-    },
     "purrr": {
       "Package": "purrr",
       "Version": "0.3.4",
@@ -988,6 +988,13 @@
       "Source": "Repository",
       "Repository": "CRAN",
       "Hash": "d66fe009d4c20b7ab1927eb405db9ee2"
+    },
+    "reshape": {
+      "Package": "reshape",
+      "Version": "0.8.9",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "603d56041d7d4fa3ceb1864b3f6ee6b1"
     },
     "reshape2": {
       "Package": "reshape2",
@@ -1206,6 +1213,13 @@
       "Repository": "CRAN",
       "Hash": "8b54f22e2a58c4f275479c92ce041a57"
     },
+    "viridis": {
+      "Package": "viridis",
+      "Version": "0.6.2",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "ee96aee95a7a563e5496f8991e9fde4b"
+    },
     "viridisLite": {
       "Package": "viridisLite",
       "Version": "0.4.1",
@@ -1226,6 +1240,13 @@
       "Source": "Repository",
       "Repository": "CRAN",
       "Hash": "035fba89d0c86e2113120f93301b98ad"
+    },
+    "wesanderson": {
+      "Package": "wesanderson",
+      "Version": "0.3.6",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "42f92f1e9ef722355959ec1f7c459636"
     },
     "withr": {
       "Package": "withr",

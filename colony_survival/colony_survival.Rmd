@@ -182,7 +182,6 @@ ggcoxdiagnostics(cfit_treat_no_ran, type = "deviance",
 ```
 
 The dfbeta plot shows the effect dropping an observation has on the coefficients. Shows there are two points that affect the flup coefficient strongly. Removing these two points only increases flup's "protective" effect. Also, I have no reason to exclude them from an experimental standpoint. For these reasons, leave them in. 
-
 ```{r}
 ggcoxdiagnostics(cfit_treat_no_ran, type = "dfbeta",
                  linear.predictions = FALSE, ggtheme = theme_bw())
@@ -220,6 +219,39 @@ p <- p + theme_survminer(font.main = c(24, "bold", "black"),
                          font.legend = c(16, "plain", "black"))
 
 p
+```
+
+Coxph plot
+
+```{r}
+library(survminer)
+
+# refit final model with coxph
+cfit_treat_no_ran <- coxph(Surv(colony_survival_days, col_death) ~ treatment,
+               data=col_surv)
+
+fit2 <- survfit(cfit_treat_no_ran, newdata=data.frame(treatment=c("control", "flup", "sivanto")))
+```
+
+```{r}
+p1_surv_treat <- ggsurvplot(fit2,
+                data = col_surv,
+                conf.int = TRUE,
+                palette = c("#117733", "#332288", "#AA4499"),
+                legend.labs = c("Control", "Flupyradifurone", "Sivanto"),
+                xlab = "Time (days)",
+                ylab = "Probability of colony survival",
+                legend = c(0.8, 0.3),
+                legend.title = "",
+                title = "Colony survival by treatment")
+
+p1_surv_treat <- p1_surv_treat$plot +
+  theme_bw() +
+  theme(plot.title = element_text(size = 12),
+        panel.grid = element_blank(),
+        legend.position= "top")
+
+p1_surv_treat
 ```
 
 [Colour Palette] (https://stackoverflow.com/questions/57153428/r-plot-color-combinations-that-are-colorblind-accessible)

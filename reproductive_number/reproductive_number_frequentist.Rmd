@@ -111,7 +111,7 @@ There is also the annoyance that when starting_worker_number = 0 male_number = 0
 
 Why log(starting_worker_number) and log(TTEL) in the model. This creates a more realistic relationship between male_number and the two variables. For example, biologically it is likely that increasing starting_worker_number (SWN) by one at small values of SWN has a larger effect on male_number than increasing SWN by one at high values of SWN. Once, say SWN = 20, the effect of having more workers at the beginning is minimal (25 not much better than 20). Contrast that from going from 5 -\> 10 SWN, which is double and would really increase likelihood of survival and male production once placed in field. This what using log(starting_worker_number) in model represents. The plots below show this graphically.
 
-The first plot shows the relationship between worker number and male number. This is roughly linear. Because this is count data a poisson or NB model will model log(male number) ~ worker number, shown in plot 2. This isn't as linear anymore. By modelling log(male number) ~ log(worker number), we achieve a better linear relationship in the poisson/nb model, which when expressed as male number ~ e^log(worker_number) has more of an exponential shape. 
+The first plot shows the relationship between worker number and male number. This is roughly linear. Because this is count data a poisson or NB model will model log(male number) ~ worker number, shown in plot 2. This isn't as linear anymore. By modelling log(male number) ~ log(worker number), we achieve a better linear relationship in the poisson/nb model, which when expressed as male number ~ e^log(intercept + worker_number + treatment) has more of an exponential shape. 
 
 ```{r}
 # untransformed starting worker number

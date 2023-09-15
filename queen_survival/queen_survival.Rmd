@@ -151,37 +151,38 @@ ggcoxdiagnostics(cfit_treat_no_ran, type = "dfbeta",
 
 Linearity not an issue as there are no continuous variables. 
 
-KM plots
+Coxph plot
 
 ```{r}
 library(survminer)
 
-# log rank test between KM survival curves.
-# surv <- Surv(time = queen_surv$queen_survival_days, event = queen_surv$queen_death)
-# survdiff(surv ~ queen_surv$treatment)
+# refit final model with coxph
+cfit_treat_no_ran <- coxph(Surv(queen_survival_days, queen_death) ~ treatment,
+               data=queen_surv)
 
-# risk.table = TRUE,  risk.table.height = 0.25
+fit2 <- survfit(cfit_treat_no_ran, newdata=data.frame(treatment=c("control", "flup", "sivanto")))
 
-fit1 <- survfit(Surv(queen_survival_days, queen_death) ~ treatment, data=queen_surv)
+```
 
-# for prettier graphs
-p <- ggsurvplot(fit1,
+```{r}
+p1_surv_treat <- ggsurvplot(fit2,
                 data = queen_surv,
                 conf.int = TRUE,
                 palette = c("#117733", "#332288", "#AA4499"),
-                legend.labs = c("Control", "FPF", "Sivanto"),
+                legend.labs = c("Control", "Flupyradifurone", "Sivanto"),
                 xlab = "Time (days)",
-                ylab = "Probability of Queen Survival",
+                ylab = "Probability of queen survival",
+                legend = c(0.8, 0.3),
                 legend.title = "",
-                title = "Queen Survival")
+                title = "Queen survival by treatment")
 
-p <- p + theme_survminer(font.main = c(24, "bold", "black"),
-                         font.x = c(18, "bold", "black"),
-                         font.y = c(18, "bold", "black"),
-                         font.tickslab = c(16, "plain", "black"),
-                         font.legend = c(16, "plain", "black"))
+p1_surv_treat <- p1_surv_treat$plot +
+  theme_bw() +
+  theme(plot.title = element_text(size = 12),
+        panel.grid = element_blank(),
+        legend.position= "top")
 
-p
+p1_surv_treat
 ```
 
 ```{r}

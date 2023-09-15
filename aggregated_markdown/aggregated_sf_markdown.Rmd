@@ -1,0 +1,3675 @@
+---
+title: "aggregated semi field markdown"
+author: "Guy Mercer"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+When running this markdown please run each section individually as there are shared variable names between sections. When you reach the end of a section run rm(list=ls()) and move onto the next section.
+
+---------------------------------------------------
+Sucrose consumption
+
+Reminder: the csvs imported for analysis are linked from the output of data_transformation_cleaning, not db as usual. 
+
+Start with analysing sucrose consumption.
+
+```{r}
+sucrose_consumption <- read.csv("./input/sucrose_consumption.csv")
+```
+
+Ensure variables have correct class. 
+
+```{r}
+library(tidyverse)
+
+# make sure variable classes are correct
+sucrose_consumption$block <- as.factor(sucrose_consumption$block)
+class(sucrose_consumption$block)
+
+sucrose_consumption$treatment <- as.factor(sucrose_consumption$treatment)
+class(sucrose_consumption$treatment)
+
+sucrose_consumption$triad <- as.factor(sucrose_consumption$triad)
+class(sucrose_consumption$triad)
+
+class(sucrose_consumption$summed_consumption)
+
+sucrose_consumption$number_of_workers_at_exposure_start <- as.numeric(sucrose_consumption$number_of_workers_at_exposure_start)
+class(sucrose_consumption$number_of_workers_at_exposure_start)
+```
+
+Sort out the cleveland dotplot encoding. 
+
+```{r}
+# for a cleveland dotplot to work treatment has to be coded 1-3. 
+sucrose_consumption$clevelandcode <- 0 
+
+for (i in 1:nrow(sucrose_consumption)) {
+  
+  if (sucrose_consumption$treatment [i] == "control") {
+    
+    sucrose_consumption$clevelandcode [i] <- 1
+    
+  }
+  
+  if (sucrose_consumption$treatment [i] == "flup") {
+    
+    sucrose_consumption$clevelandcode [i] <- 2
+    
+    }
+  
+  if (sucrose_consumption$treatment [i] == "sivanto") {
+    
+    sucrose_consumption$clevelandcode [i] <- 3
+    
+    }
+  
+}
+
+# should be numeric already anyway
+sucrose_consumption$clevelandcode <- as.numeric(sucrose_consumption$clevelandcode)
+```
+
+Use a cleveland dotplot to identify any obvious outliers. 
+
+```{r}
+dotchart(sucrose_consumption$summed_consumption,
+         groups = factor(sucrose_consumption$clevelandcode),
+         ylab = "Order of observations",
+         xlab = "Consumption (mg)", main = "Cleveland dotplot", pch = sucrose_consumption$clevelandcode)
+```
+
+There does not appear to be any obvious outliers. Maybe consumption is slightly lower for sivanto than the other two treatment groups?
+
+Have a look at some boxplots
+
+```{r}
+boxplot(summed_consumption ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Consumption Conditional on Treatment", 
+        ylab = "Consumption", data = sucrose_consumption)
+```
+
+Also want to show consumption vs number_of_workers_exposure_start for each treatment. For the plots below the panels are filled from bottom to top and left to right. So for summed_consumption vs number_of_workers_at_exposure_start the bottom left is control, bottom right is flup, top right is sivanto.
+
+```{r}
+# by treatment
+coplot(summed_consumption ~ number_of_workers_at_exposure_start | treatment, data = sucrose_consumption)
+
+plot(x = sucrose_consumption$number_of_workers_at_exposure_start,
+     y = sucrose_consumption$summed_consumption,
+     xlab = "starting_worker_number",
+     ylab = "sucrose_consumption")
+```
+
+The plots above show that variance appears to slightly differ for each treatment group with control having a greater variance. Variance doesn't seem to increase with starting worker number, especially when you ignore the outlier in flup at starting worker number = 15.
+
+Fit a simple linear model with gls where consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start
+
+Plot the residuals vs fitted, residuals vs number_of_workers_at_exposure_start and residuals vs treatment. Do they agree with conclusions from the plots above? If so, try a variety of variance structures, including Varident(treatment), VarPower/Exp(number_of_workers_at_exposure_start), VarPower(number_of_workers_at_exposure_start | treatment), VarComb(Varident(treatment), VarPower/Exp(number_of_workers_at_exposure_start)) and finally VarComb(Varident(treatment), VarPower/Exp(number_of_workers_at_exposure_start | treatment)). 
+
+One point does look like an outlier, C17 (flup number_of_workers_at_exposure_start = 15). There is also reason to exclude this point as the queen died in the exposure period.
+
+At this point I am going to exclude C17. 
+
+```{r}
+# remove C17
+# sucrose_consumption <- sucrose_consumption [sucrose_consumption$colony_number != "17", ]
+
+# fit beyond optimal model with gls
+library(nlme)
+
+# use this for the better resid vs fitted plot
+M1 <- lm(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML")
+
+# unhash this for the summary
+summary(M1)
+
+# extract residuals from this model. At this stage the ordinary residuals are fine.
+# once a variance structure has been applied we'll have to use standardised residuals
+# where the ordinary residuals are divided by the square root of the variance. 
+# NOTE - standardised residuals = normalised residuals = Pearson residuals (if Poisson GLM).
+E <- resid(M1)
+
+# plot residual vs fitted
+plot(M1, which = c (1))
+
+# plot residual vs treatment
+boxplot(E ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = sucrose_consumption$number_of_workers_at_exposure_start,
+     y = E,
+     xlab = "starting_worker_number",
+     ylab = "Ordinary Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Ordinary residuals", data = sucrose_consumption)
+
+# redefine model with gls
+M1 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML")
+```
+
+From the residual plots, the controls appear to have a greater overall variance. Determining whether variance increases with number_of_workers_at_exposure_start is harder to ascertain.
+
+I think the simple linear model should be compared to VarIdent(treatment) first as this is the simplest approach. These models are nested so compare using log likelihood.
+
+```{r}
+M2 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = sucrose_consumption, method = "REML",
+          weights = varIdent(form= ~ 1 | treatment))
+
+summary(M2)
+
+anova(M1, M2)
+```
+
+Although not significant, maybe come back to this later to improve residual plots once the final model is fitted.
+
+Have a look at residuals via block.
+
+```{r}
+# standardised residuals for M1 vs block
+E_standard <- resid(M1, type = "normalized")
+
+boxplot(E_standard ~ block, data = sucrose_consumption, axes = TRUE,
+        cex.axis=0.75,
+        ylab = 'Standardized residuals')
+abline(0,0)
+```
+
+Include block as it is key part of experimental design
+
+
+```{r}
+M3 <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+              data = sucrose_consumption,
+              random =~ 1 | block, method = "REML")
+
+summary(M3)
+```
+
+Going into determining the optimal fixed structure my optimal model is this M3.
+
+Going to do this using likelihood ratio tests of nested models.
+
+```{r}
+M3 <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+              data = sucrose_consumption,
+              random =~ 1 | block, method = "ML")
+
+# test significance of interaction term
+M3a <- update(M3, .~. -treatment:number_of_workers_at_exposure_start)
+anova(M3, M3a)
+
+# not significant so drop
+# M3a now our starting model for the next step
+M3aa <- update(M3a, .~. -treatment)
+anova(M3a, M3aa)
+
+M3ab <- update(M3a, .~. -number_of_workers_at_exposure_start)
+anova(M3a, M3ab)
+
+# treatment not significant
+
+# so our final model is:
+M_final <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start,
+               data = sucrose_consumption,
+               random =~ 1 | block, method = "REML")
+
+summary(M_final)
+```
+
+```{r}
+plot(M_final)
+
+qqnorm(M_final)
+
+E_final <- resid(M_final, type = "normalized")
+
+plot(E_final ~ number_of_workers_at_exposure_start,
+     data = sucrose_consumption,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+abline(0, 0)
+
+# plot residual vs treatment
+boxplot(E_final ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E_final ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = sucrose_consumption)
+```
+
+The residual variance in the control group is still larger. Add back in the varIdent structure to see if this is tackled.
+
+```{r}
+final_model <- lme(summed_consumption ~ number_of_workers_at_exposure_start + treatment,
+          data = sucrose_consumption, method = "REML",
+          weights = varIdent(form= ~ 1 | treatment),
+          random = ~1 | block)
+
+plot(final_model)
+
+qqnorm(final_model)
+
+E_final <- resid(final_model, type = "normalized")
+
+plot(E_final ~ number_of_workers_at_exposure_start,
+     data = sucrose_consumption,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+abline(0, 0)
+
+# plot residual vs treatment
+boxplot(E_final ~ sucrose_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E_final ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = sucrose_consumption)
+
+summary(final_model)
+```
+
+Visually this is a slight improvement so include this variance term.
+
+Add a column to sucrose consumption for treatment sample size so the correct CIs can be calculated.
+
+```{r}
+# create n column in sucrose consumption for each treatment group
+sucrose_consumption$treatment_n <- 0
+
+for (i in 1:nrow(sucrose_consumption)) {
+  
+  if (sucrose_consumption$treatment [i] == "control") {
+    
+    sucrose_consumption$treatment_n [i] <- nrow(sucrose_consumption [sucrose_consumption$treatment == "control", ])
+    
+  }
+  
+  if (sucrose_consumption$treatment [i] == "flup") {
+    
+    sucrose_consumption$treatment_n [i] <- nrow(sucrose_consumption [sucrose_consumption$treatment == "flup", ])
+    
+  }
+  
+  if (sucrose_consumption$treatment [i] == "sivanto") {
+    
+    sucrose_consumption$treatment_n [i] <- nrow(sucrose_consumption [sucrose_consumption$treatment == "sivanto", ])
+    
+  }
+  
+}
+```
+
+[gls standard error plots](https://fw8051statistics4ecologists.netlify.app/gls.html)
+
+The CI visualisations below do not take the uncertainty of the random effects parameters into account. 
+
+```{r}
+final_model <- lme(summed_consumption ~ number_of_workers_at_exposure_start + treatment,
+          data = sucrose_consumption, method = "REML",
+          weights = varIdent(form= ~ 1 | treatment),
+          random = ~1 | block)
+
+# summary(final_model)$coeff
+
+# calculate standard error for each point. 
+# Design matrix for our observations
+xmat <- model.matrix(~ number_of_workers_at_exposure_start + treatment, data=sucrose_consumption)
+
+# Regression coefficients
+betahat<-coef(final_model)
+
+# Predictions
+sucrose_consumption$predictions <- predict(final_model, level = 0)
+# cbind(head(xmat%*%betahat), head(predictions))
+
+# Sigma^
+Sigmahat <- vcov(final_model)
+
+# var/cov(beta0 + beta1*X)
+varcovEYhat<-xmat%*%Sigmahat%*%t(xmat)
+
+# Pull off the diagonal elements and take their sqrt to 
+# get SEs that quantify uncertainty associated with the line
+SEline <- sqrt(diag(varcovEYhat))
+
+# Confidence interval for the mean
+sucrose_consumption$upconf <- sucrose_consumption$predictions + (-qt(.025, df = sucrose_consumption$treatment_n -1) * SEline)
+sucrose_consumption$lowconf <- sucrose_consumption$predictions - (-qt(.025, df = sucrose_consumption$treatment_n -1) * SEline)
+
+treatment_levs <- unique(sucrose_consumption$treatment)
+
+treatment_preds_df <- tibble()
+
+for (i in 1:length(treatment_levs)) {
+  
+  # order predictions according to treatment
+  treatment_preds <- sucrose_consumption [sucrose_consumption$treatment == treatment_levs [i],]
+  
+  # keep only the columns of interest
+  treatment_preds <- treatment_preds [, c(3,12,15,16,17)]
+  
+  # sort values by number of workers size
+  treatment_preds <- treatment_preds [order(treatment_preds$number_of_workers_at_exposure_start),]
+  
+  treatment_preds_df <- rbind(treatment_preds_df, treatment_preds)
+  
+}
+
+model_preds <- ggplot() + 
+      geom_point(data = sucrose_consumption, aes(x = number_of_workers_at_exposure_start, y = summed_consumption, color = treatment)) +
+      geom_line(data = treatment_preds_df, aes(x = number_of_workers_at_exposure_start, y = predictions, group = treatment, color = treatment)) +
+      geom_ribbon(data = treatment_preds_df, aes(x = number_of_workers_at_exposure_start, y = predictions, ymin = lowconf, ymax = upconf,
+                                              group = treatment, color = treatment, fill = treatment), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#117733", "#332288", "#AA4499"), name = "Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      scale_fill_manual(values=c("#117733", "#332288", "#AA4499"), name = "Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      xlab("Starting worker number") +
+      ylab("50% sucrose consumption (mg)") +
+      ggtitle("Sucrose consumption")
+
+model_preds
+
+model_preds_sucrose <- model_preds
+```
+
+Model output table
+
+```{r}
+library(broom.mixed)
+
+final_model_summary_tab <- broom.mixed::tidy(x = final_model)
+
+# change multiplication factors to residual variance in each group
+final_model_summary_tab [7:9, 4] <- final_model_summary_tab [7:9, 4] * summary(final_model)$sigma
+
+sequence <- 7:9
+
+for (i in 1:length(sequence)) {
+  
+  final_model_summary_tab [sequence [i], 3] <- paste("varIdent.", final_model_summary_tab [sequence [i], 3], sep = "")
+  
+}
+
+final_model_summary_tab [5, 3] <- paste("block.", final_model_summary_tab [5, 3], sep = "")
+
+final_model_summary_tab <- final_model_summary_tab [-6, -c(1,2)]
+
+library(kableExtra)
+
+options(knitr.kable.NA = '_')
+
+sucrose_consumption_model_pdf <- kbl(final_model_summary_tab, digits = 3) %>%
+                                     kable_styling() %>%
+                                     add_header_above(header = c("Summary of LMM for sucrose consumption" = 6))
+
+save_kable(sucrose_consumption_model_pdf, "output/sucrose_consumption_model.pdf")
+```
+
+---------------------------------------------------
+Pollen consumption
+
+```{r}
+pollen_consumption <- read.csv("./input/pollen_consumption.csv")
+```
+
+Ensure variables have correct class. 
+
+```{r}
+# make sure variable classes are correct
+pollen_consumption$block <- as.factor(pollen_consumption$block)
+class(pollen_consumption$block)
+
+pollen_consumption$treatment <- as.factor(pollen_consumption$treatment)
+class(pollen_consumption$treatment)
+
+pollen_consumption$triad <- as.factor(pollen_consumption$triad)
+class(pollen_consumption$triad)
+
+class(pollen_consumption$summed_consumption)
+
+pollen_consumption$number_of_workers_at_exposure_start <- as.numeric(pollen_consumption$number_of_workers_at_exposure_start)
+class(pollen_consumption$number_of_workers_at_exposure_start)
+```
+
+Sort out the cleveland dotplot encoding. 
+
+```{r}
+# for a cleveland dotplot to work treatment has to be coded 1-3. 
+pollen_consumption$clevelandcode <- 0 
+
+for (i in 1:nrow(pollen_consumption)) {
+  
+  if (pollen_consumption$treatment [i] == "control") {
+    
+    pollen_consumption$clevelandcode [i] <- 1
+    
+  }
+  
+  if (pollen_consumption$treatment [i] == "flup") {
+    
+    pollen_consumption$clevelandcode [i] <- 2
+    
+    }
+  
+  if (pollen_consumption$treatment [i] == "sivanto") {
+    
+    pollen_consumption$clevelandcode [i] <- 3
+    
+    }
+  
+}
+
+# should be numeric already anyway
+pollen_consumption$clevelandcode <- as.numeric(pollen_consumption$clevelandcode)
+```
+
+Use a cleveland dotplot to identify any obvious outliers. 
+
+```{r}
+dotchart(pollen_consumption$summed_consumption,
+         groups = factor(pollen_consumption$clevelandcode),
+         ylab = "Order of observations",
+         xlab = "Consumption (mg)", main = "Cleveland dotplot", pch = pollen_consumption$clevelandcode)
+```
+
+It does look like there are two potential outliers. Sivanto could be lower than the other two groups. Also, the other two groups look like they are separated into two distinct clusters? That's odd. Investigate. 
+
+Have a look at a boxplot.
+
+```{r}
+boxplot(summed_consumption ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Consumption Conditional on Treatment", 
+        ylab = "Consumption", data = pollen_consumption)
+```
+
+Also want to show consumption vs number_of_workers_exposure_start for each treatment. For the plots below the panels are filled from bottom to top and left to right. So for summed_consumption vs number_of_workers_at_exposure_start the bottom left is control, bottom right is flup, top right is sivanto.
+
+```{r}
+# by treatment
+coplot(summed_consumption ~ number_of_workers_at_exposure_start | treatment, data = pollen_consumption)
+
+plot(x = pollen_consumption$number_of_workers_at_exposure_start,
+     y = pollen_consumption$summed_consumption,
+     col = pollen_consumption$treatment,
+     xlab = "starting_worker_number",
+     ylab = "pollen_consumption")
+```
+
+C17 is again an outlier when starting worker number is examined. Again I will exclude it as the queen died in the dosage window early on. 
+
+```{r}
+# remove C17
+# pollen_consumption <- pollen_consumption [pollen_consumption$colony_number != "17", ]
+
+# two values 50% larger than 3rd largest value. 
+# pollen_consumption <- pollen_consumption [pollen_consumption$colony_number != "76", ]
+# pollen_consumption <- pollen_consumption [pollen_consumption$colony_number != "117", ]
+
+# fit beyond optimal model with gls
+library(nlme)
+
+M1 <- lm(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = pollen_consumption, method = "REML")
+
+# unhash this for the summary
+summary(M1)
+
+# extract residuals from this model. At this stage the ordinary residuals are fine.
+# once a variance structure has been applied we'll have to use standardised residuals
+# where the ordinary residuals are divided by the square root of the variance. 
+# NOTE - standardised residuals = normalised residuals = Pearson residuals (if Poisson GLM).
+E <- resid(M1)
+
+# plot residual vs fitted
+plot(M1, which = c (1), abline = 0)
+
+# plot residual vs treatment
+boxplot(E ~ pollen_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = pollen_consumption$number_of_workers_at_exposure_start,
+     y = E,
+     col = pollen_consumption$treatment,
+     xlab = "starting_worker_number",
+     ylab = "Ordinary Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Ordinary residuals", data = pollen_consumption)
+```
+
+With block
+
+```{r}
+M3 <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+              data = pollen_consumption,
+              random =~ 1 | block, method = "REML")
+
+summary(M3)
+
+E3 <- resid(M3, type = "normalized")
+
+# plot residual vs fitted
+plot(M3, which = c (1), abline = 0, )
+
+# plot residual vs treatment
+boxplot(E3 ~ pollen_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = pollen_consumption$number_of_workers_at_exposure_start,
+     y = E3,
+     col = pollen_consumption$treatment,
+     xlab = "starting_worker_number",
+     ylab = "Stand. Residuals")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E3 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Stand. Residuals", data = pollen_consumption)
+```
+
+Time for model selection to find the optimal fixed structure for the selected random structure. Perform using likelihood ratio tests of nested models.
+
+```{r}
+# this is our starting model.
+M3 <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+              data = pollen_consumption,
+              random =~ 1 | block, method = "ML")
+
+# test significance of interaction term
+M3a <- update(M3, .~. -treatment:number_of_workers_at_exposure_start)
+anova(M3, M3a)
+
+# drop it. M3a ref
+M3aa <- update(M3a, .~. -treatment)
+anova(M3a, M3aa)
+
+M3ab <- update(M3a, .~. -number_of_workers_at_exposure_start)
+anova(M3a, M3ab)
+
+# treatment is not significant but include in the model as part of experiment.
+```
+
+Final Model
+
+```{r}
+final_model_pollen <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start,
+                          data = pollen_consumption,
+                          random =~ 1 | block, method = "REML")
+
+summary(final_model_pollen)
+
+# take a look at the residual plots
+E_final <- resid(final_model_pollen, type = "normalized")
+
+# plot residual vs fitted
+plot(final_model_pollen)
+
+# plot residual vs treatment
+boxplot(E_final ~ pollen_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = pollen_consumption$number_of_workers_at_exposure_start,
+     y = E_final,
+     col = pollen_consumption$treatment,
+     xlab = "starting_worker_number",
+     ylab = "Stand. Residuals")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E_final ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Stand. Residuals", data = pollen_consumption)
+```
+
+Interpretation. Treatment has no effect on pollen consumption. As starting worker number increases pollen consumption increases.
+
+Add a column to sucrose consumption for treatment sample size so the correct CIs can be calculated.
+
+```{r}
+# create n column in pollen consumption for each treatment group
+pollen_consumption$treatment_n <- 0
+
+for (i in 1:nrow(pollen_consumption)) {
+  
+  if (pollen_consumption$treatment [i] == "control") {
+    
+    pollen_consumption$treatment_n [i] <- nrow(pollen_consumption [pollen_consumption$treatment == "control", ])
+    
+  }
+  
+  if (pollen_consumption$treatment [i] == "flup") {
+    
+    pollen_consumption$treatment_n [i] <- nrow(pollen_consumption [pollen_consumption$treatment == "flup", ])
+    
+  }
+  
+  if (pollen_consumption$treatment [i] == "sivanto") {
+    
+    pollen_consumption$treatment_n [i] <- nrow(pollen_consumption [pollen_consumption$treatment == "sivanto", ])
+    
+  }
+  
+}
+```
+
+Plot Model Output
+
+```{r}
+library(lme4)
+
+# if i try and use lme to do this it bugs out. Weird how it works when there is a variance structure but not when there isn't.
+final_model_pollen <- lmer(summed_consumption ~ number_of_workers_at_exposure_start + treatment + (1|block),
+          data = pollen_consumption)
+
+summary(final_model_pollen)
+
+#final_model_pollen <- lmer(summed_consumption ~ number_of_workers_at_exposure_start + treatment + (1|block),
+#          data = pollen_consumption)
+
+# summary(final_model_pollen)$coeff
+
+# calculate standard error for each point. 
+# Design matrix for our observations
+xmat <- model.matrix(~ number_of_workers_at_exposure_start + treatment, data=pollen_consumption)
+
+# Regression coefficients
+betahat<-coef(final_model_pollen)
+
+# Predictions
+pollen_consumption$predictions <- predict(final_model_pollen, level = 0)
+# cbind(head(xmat%*%betahat), head(predictions))
+
+# Sigma^
+Sigmahat <- vcov(final_model_pollen)
+
+# var/cov(beta0 + beta1*X)
+varcovEYhat<-xmat%*%Sigmahat%*%t(xmat)
+
+# Pull off the diagonal elements and take their sqrt to 
+# get SEs that quantify uncertainty associated with the line
+SEline <- sqrt(diag(varcovEYhat))
+
+# Confidence interval for the mean
+pollen_consumption$upconf <- pollen_consumption$predictions + (-qt(.025, df = pollen_consumption$treatment_n -1) * SEline)
+pollen_consumption$lowconf <- pollen_consumption$predictions - (-qt(.025, df = pollen_consumption$treatment_n -1) * SEline)
+
+treatment_levs <- unique(pollen_consumption$treatment)
+
+treatment_preds_df <- tibble()
+
+for (i in 1:length(treatment_levs)) {
+  
+  # order predictions according to treatment
+  treatment_preds <- pollen_consumption [pollen_consumption$treatment == treatment_levs [i],]
+  
+  # keep only the columns of interest
+  treatment_preds <- treatment_preds [, c(3,12,15,16,17)]
+  
+  # sort values by number of workers size
+  treatment_preds <- treatment_preds [order(treatment_preds$number_of_workers_at_exposure_start),]
+  
+  treatment_preds_df <- rbind(treatment_preds_df, treatment_preds)
+  
+}
+
+model_preds <- ggplot() + 
+      geom_point(data = pollen_consumption, aes(x = number_of_workers_at_exposure_start, y = summed_consumption, color = treatment)) +
+      geom_line(data = treatment_preds_df, aes(x = number_of_workers_at_exposure_start, y = predictions, group = treatment, color = treatment)) +
+      geom_ribbon(data = treatment_preds_df, aes(x = number_of_workers_at_exposure_start, y = predictions, ymin = lowconf, ymax = upconf,
+                                              group = treatment, color = treatment, fill = treatment), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#117733", "#332288", "#AA4499"), name = "Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      scale_fill_manual(values=c("#117733", "#332288", "#AA4499"), name = "Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      xlab("Starting worker number") +
+      ylab("50% pollen consumption (mg)") +
+      ggtitle("Pollen consumption")
+
+model_preds
+```
+
+Model output table
+
+```{r}
+library(broom.mixed)
+
+final_model_pollen <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start,
+                          data = pollen_consumption,
+                          random =~ 1 | block, method = "REML")
+
+final_model_pollen_summary_tab <- broom.mixed::tidy(x = final_model_pollen)
+
+final_model_pollen_summary_tab [5, 3] <- paste("block.", final_model_pollen_summary_tab [5, 3], sep = "")
+
+final_model_pollen_summary_tab <- final_model_pollen_summary_tab [, -c(1,2)]
+
+final_model_pollen_summary_tab [6, 1] <- "residual.sd"
+
+library(kableExtra)
+
+options(knitr.kable.NA = '_')
+
+pollen_consumption_model_pdf <- kbl(final_model_pollen_summary_tab, digits = 3) %>%
+                                     kable_styling() %>%
+                                     add_header_above(header = c("Summary of LMM for pollen consumption" = 6))
+
+save_kable(pollen_consumption_model_pdf, "output/pollen_consumption_model.pdf")
+```
+
+Make a combined figure for sucrose and pollen consumption.
+
+```{r}
+model_preds_sucrose <- model_preds_sucrose + theme(legend.position = "none")
+
+library(cowplot)
+
+pdf(file = "output/consumption_plots.pdf",   # The directory you want to save the file in
+  width = 8, # The width of the plot in inches
+  height = 6) # The height of the plot in inches
+
+plot_grid(model_preds_sucrose, model_preds, labels = c('A', 'B'))
+
+ dev.off()
+```
+
+---------------------------------------------------
+Reproductive output
+
+```{r}
+male_num <- read.csv("input/total_male_number.csv")
+```
+
+Remove colony 57 as male number was not calculated (killed the queen by
+mistake so excluded).
+
+```{r}
+male_num <- male_num [male_num$colony_number != "57",]
+```
+
+Check all the variables are in the right class.
+
+```{r}
+library(tidyverse)
+
+class_check <- tibble()
+
+for (i in 1:ncol(male_num)) {
+  
+  class <- class(male_num [, i])
+  
+  class_check [i, 1] <- class
+  
+  class_check [i, 2] <- colnames(male_num [i])
+}
+
+# they are not all in the correct class. Swap integer to numeric and factor where suitable.
+male_num$colony_number <- as.factor(male_num$colony_number)
+male_num$total_reproductive_output <- as.numeric(male_num$total_reproductive_output)
+male_num$total_male_number <- as.numeric(male_num$total_male_number)
+male_num$block <- as.factor(male_num$block)
+male_num$triad <- as.factor(male_num$triad)
+male_num$number_of_workers_at_exposure_start <- as.numeric(male_num$number_of_workers_at_exposure_start)
+male_num$time_to_egg_laying <- as.numeric(male_num$time_to_egg_laying)
+male_num$time_to_6_workers <- as.numeric(male_num$time_to_6_workers)
+male_num$time_to_exposure_start <- as.numeric(male_num$time_to_exposure_start)
+male_num$queen_capture_day <- as.numeric(male_num$queen_capture_day)
+male_num$queen_survival_days <- as.numeric(male_num$queen_survival_days)
+male_num$campus_location <- as.factor(male_num$campus_location)
+male_num$rearing_location <- as.factor(male_num$rearing_location)
+male_num$wax_moth <- as.factor(male_num$wax_moth)
+male_num$treatment <- as.factor(male_num$treatment)
+
+# rename variables first to make life easier
+colnames(male_num) <- c("col_num", "repro_num", "male_num", "block", "treatment", "triad",
+                        "camp_loc", "rear_loc", "workers", "TTEL", "TT6W", "TTES", "QCD",
+                        "wax_moth", "queen_surv")
+
+```
+
+My project is an experiment. This more than anything determines the variables I should include in the model. My experimental design indicates:
+
+male_number \~ treatment + starting_worker_number + (1\|block/triad) + (1\|campus_location)
+
+Additionally, two other variables may be important - wax_moth and time to egg laying
+
+Wax Moth - If a colony got infested with wax moth once placed in the field this could have reduced male output, depending on when in the colony cycle the infestation occurred.
+
+Time to Egg Laying - This variable is less clear but the time it took the queen to lay eggs may be indicative of their underlying fitness. I doubt this is going explain male number.
+
+To make everything simpler, remove all the other variables. I can justify omitting every other variable:
+
+Queen Capture Date - No clear biological mechanism to associate this with colony male number output
+
+Time to Exposure Start - Unsuitable as different numbers of workers were present for each colony at this timepoint.
+
+Time to 6 Workers - Workload when queen rearing stage overlapped with experimental stage resulted in this variable being inaccurate.
+
+Rearing Location - Conditions were between 26-28 degrees and 50-60% humidity in both rooms.
+
+Reproductive Number - So few queens this is essentially the same as male number.
+
+Queen Survival - This was included to explain the false zeros in my dataset. Although interesting this isn't the aim of the study. Characterising that there are false zeros in enough (intercept only binomial process in zero inflated model).
+
+Starting Worker Number - Is not an explanatory variable of interest. However, it will have a large effect on male_number so has to be included in some form. I considered including it as an offset variable but that assumes that the rate is constant, which may not be true (if anything this would not be true, adding one worker to a smaller colony would have a larger effect than adding one worker to a large colony, therefore rate is not constant). All the examples in statistical rethinking have a clearer relationship. For example, counts per day (day vs week recording), area of sampling, volume of sampling (Zuur).
+
+Campus Location - The experiment was designed so both treatment and block were evenly distributed within campus location. The effect of campus location should therefore be balanced for each treatment group. 
+
+So my starting model will be:
+
+male_number \~ treatment + starting_worker_number + wax_moth + TTEL + (1\|block/triad) + (1\|campus_location)
+
+with the suspicion that TTEL will not have much of an effect and can probably be dropped.
+
+Interaction terms are another hurdle. Treatment could negatively interact with starting worker number (as starting worker number increases the effect of treatment decreases) and positively interact with wax moth (the insecticide treatment groups could have a greater effect when wax moth is present due to synergy)
+
+adding in these consideration I end up with:
+
+male_number \~ treatment + log(starting_worker_number) + wax_moth + TTEL + treatment:log(starting_worker_number) + treatment:wax_moth + (1\|block/triad) + (1\|campus_location)
+
+There is also the annoyance that when starting_worker_number = 0 male_number = 0 (a queen, as far as I'm aware always produces workers first, if she never produces workers she'll never go on to produce males). The interaction term, although not included for this purpose, will help tackle this, as well as centring worker number. 
+Why log(starting_worker_number) in the model. This creates a more realistic relationship between male_number and the variable. For example, biologically it is likely that increasing starting_worker_number (SWN) by one at small values of SWN has a larger effect on male_number than increasing SWN by one at high values of SWN. Once, say SWN = 20, the effect of having more workers at the beginning is minimal (25 not much better than 20). Contrast that from going from 5 -\> 10 SWN, which is double and would really increase likelihood of survival and male production once placed in field. This what using log(starting_worker_number) in model represents. The plots below show this graphically.
+
+```{r}
+# untransformed starting worker number
+male_num$workers_ut <- male_num$workers
+
+# simple plot of worker vs male number
+plot(x = male_num$workers_ut, y = male_num$male_num)
+with(subset(male_num,male_num>0), lines(lowess(male_num~workers_ut)))
+
+# plot of worker on log scale vs male number
+plot(x = male_num$workers_ut, y = male_num$male_num, log = "y")
+with(subset(male_num,male_num>0), lines(lowess(male_num~workers_ut)))
+
+# plot of worker on log scale vs male number on log scale
+plot(x = male_num$workers_ut, y = male_num$male_num, log = "xy")
+with(subset(male_num,male_num>0), lines(lowess(male_num~workers_ut)))
+
+# plot of worker vs male number on log scale
+plot(x = male_num$workers_ut, y = male_num$male_num, log = "x")
+with(subset(male_num,male_num>0), lines(lowess(male_num~workers_ut)))
+```
+
+Two important hurdles to navigate are whether I require a NB (gamma-poisson) and if my data is zero inflated. From my previous attempt at tackling this dataset I am pretty sure they are required. However, I need to attempt this again.
+
+Data Exploration
+
+Look for outliers in the response and explanatory variables.
+
+Sort out the cleveland dotplot encoding.
+
+```{r}
+# for a cleveland dotplot to work treatment has to be coded 1-3. 
+male_num$clevelandcode <- 0 
+
+for (i in 1:nrow(male_num)) {
+  
+  if (male_num$treatment [i] == "control") {
+    
+    male_num$clevelandcode [i] <- 1
+    
+  }
+  
+  if (male_num$treatment [i] == "flup") {
+    
+    male_num$clevelandcode [i] <- 2
+    
+    }
+  
+  if (male_num$treatment [i] == "sivanto") {
+    
+    male_num$clevelandcode [i] <- 3
+    
+    }
+  
+}
+
+# should be numeric already anyway
+male_num$clevelandcode <- as.numeric(male_num$clevelandcode)
+```
+
+Produce some cleveland dotplots.
+
+```{r}
+op <- par(mfrow = c(4, 2), mar = c(3, 3, 3, 1))
+
+dotchart(male_num$male_num, main = "Male Number", group = male_num$clevelandcode)
+plot(0, 0, type = "n", axes = FALSE)
+dotchart(male_num$workers, main = "Workers At Start", group = male_num$clevelandcode)
+dotchart(male_num$TTEL, main = "TTEL", group = male_num$clevelandcode)
+# dotchart(male_num$TT6W, main = "TT6W", group = male_num$clevelandcode)
+# dotchart(male_num$TTES, main = "TTES", group = male_num$clevelandcode)
+# dotchart(male_num$QCD, main = "Queen Capture Day", group = male_num$clevelandcode)
+# dotchart(male_num$queen_surv, main = "Queen Survival", group = male_num$clevelandcode)
+
+par(op)
+```
+
+There is a small degree of skew for workers at start but there aren't any inputting errors. Transform to log(workers)
+
+```{r}
+male_num$workers <- log(male_num$workers)
+```
+
+```{r}
+dotchart(male_num$workers, main = "Workers At Start", group = male_num$clevelandcode)
+```
+
+```{r}
+# sources the functions required.
+source("~/local_package_source/HighstatLibV10.R")
+
+Z <- cbind(male_num$male_num, male_num$workers,
+           male_num$TTEL)
+
+colnames(Z) <- c("Male Number", "log(Workers at Start)", "TTEL")
+
+pairs(Z, lower.panel = panel.smooth2,
+upper.panel = panel.cor, diag.panel = panel.hist)
+```
+
+Look at boxplots for treatment, wax_moth, treatment:wax_moth, block and triad
+
+```{r}
+boxplot(male_num ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Male Number Vs Treatment", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Boxplot of Male Number Vs Wax Moth", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ wax_moth:treatment,
+        varwidth = TRUE, xlab = "Wax Moth:Treatment",
+        main = "Boxplot of Male Number Vs Wax Moth:Treatment", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Boxplot of Male Number Vs Block", 
+        ylab = "Number of males", data = male_num)
+
+boxplot(male_num ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Boxplot of Male Number Vs Triad", 
+        ylab = "Number of males", data = male_num)
+
+```
+
+Triad and block look important, treatment and wax moth look to have no effect. wax_moth:treatment is hard to interpret due to the low sample size for some combinations (Y:Sivanto = 3).
+
+Centre log(starting worker number) and TTEL to aid intercept interpretation.
+
+```{r}
+mean_log_workers <- mean(male_num$workers)
+
+male_num$workers <- male_num$workers - mean(male_num$workers)
+
+male_num$TTEL <- male_num$TTEL - mean(male_num$TTEL)
+```
+
+Approach is to fit the beyond optimal model, find the appropriate distribution (poisson, NB or ZINB) (use a frequency plot to interrogate the need for zero inflation as well as simulation to determine the number of zeros expected from a NB distribution), then perform model selection to probe the importance of the TTEL, wax_moth, treatment:wax_moth and treatment:workers terms.
+
+Start with a poisson model, although this will probably be overdispersed.
+
+```{r}
+library(glmmTMB)
+
+f1 <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:workers + treatment:wax_moth + (1|block/triad) + (1|camp_loc))
+
+# poisson
+m_poisson_full <- glmmTMB(f1,
+              data = male_num,
+              family = "poisson")
+
+summary(m_poisson_full)
+```
+
+Check for overdispersion using the pearson dispersion statistic.
+
+```{r}
+dispfun <- function(m) {
+    r <- residuals(m,type="pearson")
+    n <- df.residual(m)
+    dsq <- sum(r^2)
+    c(dsq=dsq,n=n,disp=dsq/n)
+}
+
+sapply(list(poisson=m_poisson_full),dispfun)
+```
+
+22.4 is highly overdispersed. Is this apparent or real overdispersion? Apparent overdispersion is due to:
+
+1. missing covariates or interactions
+2. outliers in the response variable
+3. non-linear effects of covariates entered as linear terms in the systematic part of the model
+4. choice of the wrong link function
+
+I am quite confident that there were no extreme outliers in the response variable or non-linear effects. I can't see how my choice of link function is incorrect, especially as male_num vs log(workers) appears weakly exponential. Missing covariates or interactions may be a problem but all the covariates excluded were not biologically relevant (TTES, QCD).
+
+Real overdispersion exists when we cannot identify any of the previous mentioned causes. This can be because the variation in the data really is larger than the mean. Or there may be many zeros (which may, or may not, cause overdispersion), clustering of observations, or correlation between observations.
+
+I think I have real overdispersion. As φ is larger than 15 or 20, a quasi-poisson approach is not recommended. Instead attempt a negative binomial GLM or zero-inflated model. 
+
+Look at a frequency plot for the number of zeros. 
+
+```{r}
+plot(table(male_num$male_num))
+```
+
+How many zeros would be expected from a negative binomial distribution?
+
+```{r}
+# nb
+m_nb_full <- glmmTMB(f1,
+              data = male_num,
+              family = "nbinom2")
+
+summary(m_nb_full)
+
+# dispersion parameter of 1.44
+```
+
+Probability of a true zero from a NB distribution = (k/(µ+k))^k. The mean for male number is 65.38983, sample size is 59 and k for the previously fitted negative binomial is (1.44). Probability of true zeros is therefore 0.003981848 * 59 = 0.234929. So there are more zeros than expected.
+
+What is the pearson dispersion statistic for this model?
+
+```{r}
+sapply(list(nb=m_nb_full),dispfun)
+```
+
+What about a ZINB?
+
+```{r}
+# zinb
+m_zinb_full <- glmmTMB(f1,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1)
+
+summary(m_zinb_full)
+```
+
+Compare the AICs of the poisson, nb and zinb models
+
+```{r}
+AIC(m_poisson_full, m_nb_full, m_zinb_full)
+```
+
+AIC also supports the decision to go with the zero inflated model.
+
+Perform model selection on the fixed effects of the model.
+
+```{r}
+# set REML=FALSE
+m_zinb_full <- glmmTMB(f1,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+f1 <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:workers + treatment:wax_moth + (1|block/triad) + (1|camp_loc))
+
+f1a <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:workers + (1|block/triad) + (1|camp_loc))
+
+f1b <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:wax_moth + (1|block/triad) + (1|camp_loc))
+
+f1c <- formula(male_num ~ treatment + wax_moth + workers + treatment:workers + treatment:wax_moth + (1|block/triad) + (1|camp_loc))
+
+
+m_zinb_a <- glmmTMB(f1a,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+m_zinb_b <- glmmTMB(f1b,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+m_zinb_c <- glmmTMB(f1c,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+library(lmtest)
+
+lrtest(m_zinb_full, m_zinb_a)
+lrtest(m_zinb_full, m_zinb_b)
+lrtest(m_zinb_full, m_zinb_c)
+
+# dropped treatment:wax_moth
+f1a <- formula(male_num ~ treatment + wax_moth + workers + TTEL + treatment:workers + (1|block/triad) + (1|camp_loc))
+
+f1aa <- formula(male_num ~ treatment + wax_moth + workers + TTEL + (1|block/triad) + (1|camp_loc))
+
+f1ab <- formula(male_num ~ treatment + wax_moth + workers + treatment:workers + (1|block/triad) + (1|camp_loc))
+
+f1ac <- formula(male_num ~ treatment + workers + TTEL + treatment:workers + (1|block/triad) + (1|camp_loc))
+
+m_zinb_aa <- glmmTMB(f1aa,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+m_zinb_ab <- glmmTMB(f1ab,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+m_zinb_ac <- glmmTMB(f1ac,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+lrtest(m_zinb_a, m_zinb_aa)
+lrtest(m_zinb_a, m_zinb_ab)
+lrtest(m_zinb_a, m_zinb_ac)
+
+# dropped treatment:workers
+f1aa <- formula(male_num ~ treatment + wax_moth + workers + TTEL + (1|block/triad) + (1|camp_loc))
+
+f1aaa <- formula(male_num ~ treatment + wax_moth + workers + (1|block/triad) + (1|camp_loc))
+
+f1aab <- formula(male_num ~ treatment + wax_moth + TTEL + (1|block/triad) + (1|camp_loc))
+
+f1aac <- formula(male_num ~ treatment + workers + TTEL + (1|block/triad) + (1|camp_loc))
+
+f1aad <- formula(male_num ~ wax_moth + workers + TTEL + (1|block/triad) + (1|camp_loc))
+
+m_zinb_aaa <- glmmTMB(f1aaa,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+m_zinb_aab <- glmmTMB(f1aab,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+m_zinb_aac <- glmmTMB(f1aac,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+m_zinb_aad <- glmmTMB(f1aad,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+lrtest(m_zinb_aa, m_zinb_aaa)
+lrtest(m_zinb_aa, m_zinb_aab)
+lrtest(m_zinb_aa, m_zinb_aac)
+lrtest(m_zinb_aa, m_zinb_aad)
+
+# dropped TTEL
+f1aaa <- formula(male_num ~ treatment + wax_moth + workers + (1|block/triad) + (1|camp_loc))
+
+f1aaaa <- formula(male_num ~ treatment + wax_moth + (1|block/triad) + (1|camp_loc))
+
+f1aaab <- formula(male_num ~ treatment + workers + (1|block/triad) + (1|camp_loc))
+
+f1aaac <- formula(male_num ~ wax_moth + workers + (1|block/triad) + (1|camp_loc))
+
+m_zinb_aaaa <- glmmTMB(f1aaaa,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+m_zinb_aaab <- glmmTMB(f1aaab,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+m_zinb_aaac <- glmmTMB(f1aaac,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+lrtest(m_zinb_aaa, m_zinb_aaaa)
+lrtest(m_zinb_aaa, m_zinb_aaab)
+lrtest(m_zinb_aaa, m_zinb_aaac)
+
+# dropped wax_moth 0.04 not a strong result during multiple rounds of hypothesis testing.
+# left with variables selected through experimental design
+f1aaab <- formula(male_num ~ treatment + workers + (1|block/triad) + (1|camp_loc))
+
+f1aaaba <- formula(male_num ~ treatment + (1|block/triad) + (1|camp_loc))
+
+f1aaabb <- formula(male_num ~ workers + (1|block/triad) + (1|camp_loc))
+
+m_zinb_aaaba <- glmmTMB(f1aaaba,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+m_zinb_aaabb <- glmmTMB(f1aaabb,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+lrtest(m_zinb_aaab, m_zinb_aaaba)
+lrtest(m_zinb_aaab, m_zinb_aaabb)
+
+# treatment lrtest is not returning a p-value. Do it without camp_loc
+f1aaab <- formula(male_num ~ treatment + workers + (1|block/triad))
+
+f1aaaba <- formula(male_num ~ treatment + (1|block/triad))
+
+f1aaabb <- formula(male_num ~ workers + (1|block/triad))
+
+m_zinb_aaab <- glmmTMB(f1aaab,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+m_zinb_aaaba <- glmmTMB(f1aaaba,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+m_zinb_aaabb <- glmmTMB(f1aaabb,
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=FALSE)
+
+lrtest(m_zinb_aaab, m_zinb_aaaba)
+lrtest(m_zinb_aaab, m_zinb_aaabb)
+
+# 0.01715 for treatment.
+```
+
+Final model is male_num ~ treatment + workers ZINB.
+
+```{r}
+final_model <- glmmTMB(male_num ~ treatment + workers + (1|block/triad) + (1|camp_loc),
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=TRUE)
+
+summary(final_model)
+
+# set flup to the intercept
+final_model_flup_int <- glmmTMB(male_num ~ relevel(treatment, "flup") + workers + (1|block/triad) + (1|camp_loc),
+              data = male_num,
+              family = "nbinom2",
+              zi = ~1,
+              REML=TRUE)
+
+summary(final_model_flup_int)
+```
+
+Model Validation. Plot the pearson residuals against each explanatory variable. No serious issues appear. 
+
+```{r}
+final_model_e <- residuals(final_model, type = "pearson")
+
+# vs workers 
+plot(x = male_num$workers, y = final_model_e)
+abline(0,0)
+
+# vs fitted
+plot(x = fitted(final_model), y = final_model_e)
+abline(0,0)
+
+# vs treatment 
+boxplot(final_model_e ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Pearson Residuals Vs Treatment", 
+        ylab = "Pearson Residuals", data = male_num)
+
+# vs block
+boxplot(final_model_e ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Boxplot of Pearson Residuals Vs Block", 
+        ylab = "Pearson Residuals", data = male_num)
+
+# vs camp_loc
+boxplot(final_model_e ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Boxplot of Pearson Residuals Vs Campus Location", 
+        ylab = "Pearson Residuals", data = male_num)
+```
+
+The poor predictive performance of the model shows that the explanatory variables that underpin reproductive output are many and complex. One of these is the size of the colony in terms of worker number when the experiment began and this does explain some of the variance in the data. Treatment also explained some of the variance in the data. There must have been a variable or variables omitted from the experimental design that dictate(s) why the reproductive output of some colonies stayed unexpectedly small or became unexpectedly large in relation to predictions based on worker number and treatment alone. Most importantly, treatment did have an effect, but not the one hypothesised. Nevertheless, my results show that AIs and formulations can diverge significantly in their effects on B.terrestris.
+
+```{r}
+male_number <- male_num$male_num
+
+fitted_values <- fitted(final_model)
+
+goodness_fit <- lm(fitted_values ~ male_number)
+
+summary(goodness_fit)
+
+# observed vs fitted
+plot(x = male_number, y = fitted_values)
+abline(goodness_fit)
+
+```
+
+Predict the model output. 
+
+```{r}
+# predict male for each level of treatment
+D1_control <- data.frame(workers = seq(min(male_num$workers [male_num$treatment == "control"]),
+                                       max(male_num$workers [male_num$treatment == "control"]), length.out = 200),
+                         treatment = "control",
+                         block = NA,
+                         camp_loc = NA,
+                         triad = NA)
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_con <- setNames(as_tibble(predict(final_model,
+                                    D1_control,
+                                    se.fit = TRUE,
+                                    type = "link",
+                                    re.form = NA)[1:2]),
+                      c('fit_link','se_link'))
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_con <- mutate(ci_df_con,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(male_num [male_num$treatment == "control",]) -1) * se_link)), 
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(male_num [male_num$treatment == "control",]) -1) * se_link)))
+
+# --------------
+
+D1_flup <- data.frame(workers = seq(min(male_num$workers [male_num$treatment == "flup"]),
+                                    max(male_num$workers [male_num$treatment == "flup"]), length.out = 200),
+                         treatment = "flup",
+                         block = NA,
+                         camp_loc = NA,
+                         triad = NA)
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_flup <- setNames(as_tibble(predict(final_model,
+                                    D1_flup,
+                                    se.fit = TRUE,
+                                    type = "link",
+                                    re.form = NA)[1:2]),
+                      c('fit_link','se_link'))
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_flup <- mutate(ci_df_flup,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(male_num [male_num$treatment == "flup",]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(male_num [male_num$treatment == "flup",]) -1) * se_link)))
+
+# --------------
+
+D1_siv <- data.frame(workers = seq(min(male_num$workers [male_num$treatment == "sivanto"]),
+                                   max(male_num$workers [male_num$treatment == "sivanto"]), length.out = 200),
+                         treatment = "sivanto",
+                         block = NA,
+                         camp_loc = NA,
+                         triad = NA)
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_siv <- setNames(as_tibble(predict(final_model,
+                                    D1_siv,
+                                    se.fit = TRUE,
+                                    type = "link",
+                                    re.form = NA)[1:2]),
+                      c('fit_link','se_link'))
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_siv <- mutate(ci_df_siv,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(male_num [male_num$treatment == "sivanto",]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(male_num [male_num$treatment == "sivanto",]) -1) * se_link)))
+```
+
+ggplot of the above
+
+```{r}
+# combine line predictions
+ggplot_lines_df <- rbind(cbind(D1_control, ci_df_con), cbind(D1_flup, ci_df_flup), cbind(D1_siv, ci_df_siv))
+
+model_preds <- ggplot() + 
+      geom_point(data = male_num, aes(x = workers, y = male_num, color = treatment)) +
+      geom_line(data = ggplot_lines_df, aes(x = workers, y = fit_resp, group = treatment, color = treatment)) +
+      geom_ribbon(data = ggplot_lines_df, aes(x = workers, y = fit_resp, ymin = right_lwr, ymax = right_upr,
+                                              group = treatment, color = treatment, fill = treatment), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#117733", "#332288", "#AA4499"), name="Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      scale_fill_manual(values=c("#117733", "#332288", "#AA4499"), name="Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      xlab("Centred Log(Starting Worker Number)") +
+      ylab("Male Number") +
+      ggtitle("Change in male output over starting worker number for each treatment")
+
+model_preds
+```
+
+Plot on untransformed worker number
+
+```{r}
+ggplot_lines_df$workers_ut <- exp(ggplot_lines_df$workers + mean_log_workers)
+
+model_preds_ut <- ggplot() + 
+      geom_point(data = male_num, aes(x = workers_ut, y = male_num, color = treatment)) +
+      geom_line(data = ggplot_lines_df, aes(x = workers_ut, y = fit_resp, group = treatment, color = treatment)) +
+      geom_ribbon(data = ggplot_lines_df, aes(x = workers_ut, y = fit_resp, ymin = right_lwr, ymax = right_upr,
+                                              group = treatment, color = treatment, fill = treatment), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#117733", "#332288", "#AA4499"), name="Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      scale_fill_manual(values=c("#117733", "#332288", "#AA4499"), name="Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      xlab("Starting worker number") +
+      ylab("Male number") +
+      ggtitle("Change in male output over starting worker number for each treatment")
+
+model_preds_ut
+```
+
+Model table output
+
+```{r}
+final_model_male_num_summary_tab <- broom.mixed::tidy(x = final_model_flup_int)
+
+final_model_male_num_summary_tab [5, 4] <- paste("zi.", final_model_male_num_summary_tab [5, 4], sep = "")
+
+final_model_male_num_summary_tab [6, 4] <- paste("triad.", final_model_male_num_summary_tab [6, 4], sep = "")
+
+final_model_male_num_summary_tab [7, 4] <- paste("block.", final_model_male_num_summary_tab [7, 4], sep = "")
+
+final_model_male_num_summary_tab [8, 4] <- paste("camp_loc.", final_model_male_num_summary_tab [8, 4], sep = "")
+
+final_model_male_num_summary_tab <- final_model_male_num_summary_tab [, 4:8]
+
+library(kableExtra)
+
+options(knitr.kable.NA = '_')
+
+male_number_model_pdf <- kbl(final_model_male_num_summary_tab, digits = 3) %>%
+                                     kable_styling() %>%
+                                     add_header_above(header = c("Summary of ZINB for male number" = 5))
+
+save_kable(male_number_model_pdf, "output/male_number_model.pdf")
+```
+
+Export male number plot
+
+```{r}
+model_preds <- model_preds + theme(legend.position = "none")
+
+library(cowplot)
+
+pdf(file = "output/male_number_plot.pdf",   # The directory you want to save the file in
+  width = 8, # The width of the plot in inches
+  height = 6) # The height of the plot in inches
+
+model_preds_ut
+
+ dev.off()
+```
+
+---------------------------------------------------
+Reproductive mass
+---------------------------------------------------
+Worker number
+
+Import data and check data classes.
+
+```{r}
+work_num <- read.csv("./input/worker_number.csv")
+
+work_num$colony_number <- as.factor(work_num$colony_number)
+work_num$block <- as.factor(work_num$block)
+work_num$triad <- as.factor(work_num$triad)
+work_num$experiment_census_day <- as.numeric(work_num$experiment_census_day)
+work_num$wax_moth <- as.factor(work_num$wax_moth)
+work_num$worker_number <- as.numeric(work_num$worker_number)
+work_num$treatment <- as.factor(work_num$treatment)
+work_num$number_of_workers_at_exposure_start <- as.numeric(work_num$number_of_workers_at_exposure_start)
+work_num$campus_location <- as.factor(work_num$campus_location)
+```
+
+Remove colony 57 due to accidental queen death
+
+```{r}
+work_num <- work_num [work_num$colony_number != "57", ]
+
+# helps identify odd looking residuals
+rownames(work_num) <- 1:nrow(work_num)
+```
+
+Visualisations
+
+```{r}
+library(lattice)
+
+MyLines <- function(xi, yi, ...){
+  I <- order(xi)
+  panel.lines(xi[I], yi[I], col = 1)
+}
+
+# by treatment
+xyplot(worker_number ~ experiment_census_day | treatment, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+
+# by block
+xyplot(worker_number ~ experiment_census_day | block, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+
+
+# by number_of_workers_at_exposure_start
+# convert this variable into bins first. "5-9", "10-14", "15-19", "20-24", "25-29"
+swn_index <- vector(length = nrow(work_num))
+
+swn_index [work_num$number_of_workers_at_exposure_start > 0 & work_num$number_of_workers_at_exposure_start < 10] <- "5-9"
+swn_index [work_num$number_of_workers_at_exposure_start > 9 & work_num$number_of_workers_at_exposure_start < 15] <- "10-14"
+swn_index [work_num$number_of_workers_at_exposure_start > 14 & work_num$number_of_workers_at_exposure_start < 20] <- "15-19"
+swn_index [work_num$number_of_workers_at_exposure_start > 19 & work_num$number_of_workers_at_exposure_start < 25] <- "20-24"
+swn_index [work_num$number_of_workers_at_exposure_start > 24 & work_num$number_of_workers_at_exposure_start < 30] <- "25-29"
+
+work_num$SWN <- swn_index
+
+work_num$SWN <- as.factor(work_num$SWN)
+
+work_num$SWN <- factor(work_num$SWN, levels = c("5-9", "10-14", "15-19", "20-24", "25-29"))
+
+# SWN
+xyplot(worker_number ~ experiment_census_day | SWN, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+
+# campus location
+xyplot(worker_number ~ experiment_census_day | campus_location, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+
+# campus location*treatment
+xyplot(worker_number ~ experiment_census_day | campus_location*treatment, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+
+# block*treatment
+xyplot(worker_number ~ experiment_census_day | block*treatment, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+
+# rearing_location
+xyplot(worker_number ~ experiment_census_day | rearing_location, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+```
+
+Coding of the wax moth variable in hindsight doesn't make much sense. Change it so if a colony was affected by wax moth, all the timepoints have wax moth = Y. 
+
+```{r}
+wax_moth_cols <- unique(work_num$colony_number [work_num$wax_moth == "Y"])
+
+wm_index <- vector(length = nrow(work_num))
+
+for (i in 1:length(wax_moth_cols)) {
+  
+  wm_index [work_num$colony_number == wax_moth_cols [i]] <- "Y"
+  
+}
+
+wm_index [wm_index == FALSE] <- "N"
+
+work_num$WM <- wm_index
+
+work_num$WM <- as.factor(work_num$WM)
+
+# wax moth
+xyplot(worker_number ~ experiment_census_day | WM, data = work_num,
+       groups = colony_number, xlab = "Day", ylab = "Worker Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+```
+
+These are the elements of the analysis I have to consider:
+
+1. Smoothers will be necessary due to the clear non-linear relationship
+2. Interactions are what are important. For smoothers these are simply the number of smoothers required. 
+3. How many smoothers do I need? One, three (one for each treatment), six (one for each treatment:WM combination)?
+4. How do I determine this? Use AIC? Code smoothers as modification of overall smoother and use the F-statistic and associated p-value for the smoother using
+the by option, obtained by summary()? compare the model with and without the second smoother and apply an F-test? Are these tests appropriate once we add poisson/NB distribution?
+5. Accounting for count aspect of data using poisson/NB approach?
+6. Appropriately coding the random effects? Should I use (time|block/triad/colony) to account for the variation of time's relationship with worker number between colonies? Should I include corAR1(form=~day|colony) correlation structure to tackle non independent residuals?
+
+Start off with a GAM with a poisson distribution with one smoother and compare to a GAM with a NB distribution.
+
+```{r}
+# these two values indicate that a poisson may not be suitable as the variance of worker number is much larger than the mean
+mean(work_num$worker_number)
+var(work_num$worker_number)
+
+library(mgcv)
+library(MASS)
+
+# specify gam with poisson distribution
+gam_poiss <- gam(worker_number ~ treatment + WM + s(experiment_census_day),
+                 family=poisson,
+                 data = work_num)
+
+summary(gam_poiss)
+
+# anova(gam_poiss)
+
+plot(gam_poiss)
+
+# have to remove either treatment or WM for this to display correctly
+# par(mar = c(2, 2, 2, 2))
+# vis.gam(gam_poiss_one_smooth, theta = 120, color = "heat")
+
+# specify gam with nb distribution
+gam_nb <- gam(worker_number ~ treatment + WM + s(experiment_census_day),
+                 family=nb(),
+                 data = work_num)
+
+summary(gam_nb)
+
+# anova(gam_nb)
+
+plot(gam_nb)
+
+# likelihood ratio test
+llhNB <- logLik(gam_nb); llhPoisson <- logLik(gam_poiss)
+
+d <- 2 * (llhNB - llhPoisson)
+
+pval <- 0.5 * pchisq(as.numeric(d), df = 1,
+                     lower.tail = FALSE)
+
+pval
+
+# AIC
+AIC(gam_nb, gam_poiss)
+```
+
+Both AIC and LLH test suggest that NB is a better fit so select NB as the distribution.
+
+Based on the experimental design treatment must be included in the model. There are a number of other factors such as, wax_moth, campus_location and block. It would be thorough to investigate if these factors were interacting individually with day. Given the vast number of possible interactions between day and all the factors, I think an approach similar (but slightly modified) to chapter 16 in zuur, where forward selection is used, is applicable. 
+
+Start with worker number ~ s(experiment_census_day) and use this as the baseline. 
+
+Then fit models:
+
+worker number ~ s(experiment_census_day) + 
+                s(experiment_census_day, by=as.numeric(treatment=="flup")) +
+                s(experiment_census_day, by=as.numeric(treatment=="sivanto")) +
+                treatment
+
+worker number ~ s(experiment_census_day) + 
+                s(experiment_census_day, by=as.numeric(WM=="Y")) +
+                WM
+
+worker number ~ s(experiment_census_day) + 
+                s(experiment_census_day, by=as.numeric(campus_location=="WA")) +
+                s(experiment_census_day, by=as.numeric(campus_location=="BA")) +
+                s(experiment_census_day, by=as.numeric(campus_location=="BG")) +
+                campus_location
+
+worker number ~ s(experiment_census_day) + 
+                s(experiment_census_day, by=as.numeric(block=="2")) +
+                s(experiment_census_day, by=as.numeric(block=="3")) +
+                s(experiment_census_day, by=as.numeric(block=="4")) +
+                s(experiment_census_day, by=as.numeric(block=="5")) +
+                block
+
+compare through AIC and retain the best one. If nothing is better than treatment then take treatment and keep that as the final model.
+
+I think i am right in saying that exploring combinations of other factors with treatment is fraught with issues due to the number of colonies in each treatment:respective factor group. Means some of the smoothers created will be based on 3-5 colonies, which undermines any results. 
+
+I think the best I can do is show the other factor:smoother options were not significant (if that is indeed the case), then stick with treatment only and try and sort out the random effect component (random intercept and slope and/or ar-1 correlation structure).
+
+```{r}
+gam_nb_treat <- gam(worker_number ~ treatment +
+                    s(experiment_census_day) +
+                    s(experiment_census_day, by=as.numeric(treatment=="flup")) +
+                    s(experiment_census_day, by=as.numeric(treatment=="sivanto")),
+                    family = nb(),
+                    data = work_num)
+
+summary(gam_nb_treat)
+
+gam_nb_WM <- gam(worker_number ~ WM +
+                    s(experiment_census_day) +
+                    s(experiment_census_day, by=as.numeric(WM=="Y")),
+                    family = nb(),
+                    data = work_num)
+
+summary(gam_nb_WM)
+
+gam_nb_CL <- gam(worker_number ~ s(experiment_census_day) +
+                   s(experiment_census_day, by=as.numeric(campus_location=="WA")) +
+                   s(experiment_census_day, by=as.numeric(campus_location=="BA")) +
+                   s(experiment_census_day, by=as.numeric(campus_location=="BG")) +
+                   campus_location,
+                   family = nb(),
+                   data = work_num)
+
+summary(gam_nb_CL)
+
+plot(gam_nb_CL)
+
+gam_nb_block <- gam(worker_number ~ s(experiment_census_day) +
+                      s(experiment_census_day, by=as.numeric(block=="2")) +
+                      s(experiment_census_day, by=as.numeric(block=="3")) +
+                      s(experiment_census_day, by=as.numeric(block=="4")) +
+                      s(experiment_census_day, by=as.numeric(block=="5")) +
+                      block,
+                      family = nb(),
+                      data = work_num)
+
+summary(gam_nb_block)
+
+plot(gam_nb_block)
+
+AIC(gam_nb_treat, gam_nb_WM, gam_nb_CL, gam_nb_block)
+```
+
+Tests and comparisons above suggest that wax moth can be discounted. All the p values are approximate with gam so p = 0.01-0.05 is not convincing. Campus location and block were the two most important variables. As we are only interested in controlling for their effect, not investigating it, these should be included as random components (random slopes).
+
+I read [here](https://fromthebottomoftheheap.net/2017/12/14/difference-splines-ii/) that an ordered-factor-smooth interaction approach can be taken. This is where treatment is converted to an ordered factor (for modelling purposes only), a smooth is fitted for the reference level, then two difference smooths are fitted for the other two levels. This sounds (roughly) analogous to what I was attempting with the Zuur approach (zuur approach was altering the overall smoother for each treatment where this is altering the reference level smooth, therefore this approach sounds more relevant). Try it this way and see if the results differ. As the Zuur book is quite old now the way certain models are coded could have changed. This could be why I am getting odd results. Let's see.
+
+Note = the use of treatment for the intercept and treatment_ord for the difference smooths is valid. See the reference.
+
+```{r}
+# change treatment into an ordered factor and call it treatment_ord
+work_num$treatment_ord <- ordered(work_num$treatment, levels = c("control", "flup", "sivanto"))
+
+gam_nb_treat_ord_block_slope_CL <- gam(worker_number ~ treatment +
+                                    s(experiment_census_day) +
+                                    s(experiment_census_day, by=treatment_ord) +
+                                    s(experiment_census_day, block, bs = "re") +
+                                    s(experiment_census_day, campus_location, bs = "re"),
+                    family = nb(),
+                    data = work_num)
+
+summary(gam_nb_treat_ord_block_slope_CL)
+
+library(gratia)
+variance_comp(gam_nb_treat_ord_block_slope_CL)
+
+plot(gam_nb_treat_ord_block_slope_CL, shade = TRUE, pages = 1, scale = 0, seWithMean = TRUE)
+```
+
+Discussion on how to determine [significance of random effects](https://stackoverflow.com/questions/54244341/how-to-test-the-statistical-significance-of-a-random-effect-in-gamm)
+
+Quotes, "I wouldn't even bother testing the random effect in this model specifically, and often I don't care if it is significant or not. It depends on the question or hypothesis I am working on. Often I want it in the model due to some clustering in the data that I want included in the model regardless of the significance."
+
+This line of reasoning applies to both campus_location and block.
+
+"If gam() is used, then summary() gives a test based on a likelihood ratio test as suggested by @BenBolker, but the reference distribution is corrected for testing on the boundary of the parameter space"
+
+Graphical Validation
+
+```{r}
+E <- residuals(gam_nb_treat_ord_block_slope_CL, type = "pearson")
+
+plot(x = work_num$experiment_census_day, y = E)
+abline()
+
+boxplot(E~campus_location,
+        varwidth=TRUE,
+        data = work_num)
+
+boxplot(E~block,
+        varwidth=TRUE,
+        data = work_num)
+
+boxplot(E~rearing_location,
+        varwidth=TRUE,
+        data = work_num)
+
+boxplot(E~WM,
+        varwidth=TRUE,
+        data = work_num)
+```
+
+The pattern in the vs day plot may appear alarming but all it is showing is some colonies lived longer than expected with a small number of individuals. For example, on day 84 there is a normalised residual of almost 8. This is for colony 214. That is because the predicted value is 0.7229225 (above) but the colony 214 had 9 workers remaining. Does this affect the interpretations I draw from the model? No.
+
+Something I haven't considered so far is a residual correlation structure in relation to day as it is time. In the residual plot vs day, apart from the large residuals that have been addressed above, I can't see any patterns in my residuals, which suggests that corAR1 probably isn't necessary. For this I'm pretty sure I have to switch to gamm.
+
+```{r}
+# this chunk shows that the correlation structure adds nothing to the model. 
+# correlation structure, block slope and CL slope
+gam_nb_treat_corar1_block_slope_CL <- gamm(worker_number ~ treatment + s(experiment_census_day) + s(experiment_census_day, by=treatment_ord),
+                            correlation = corAR1(form =~ experiment_census_day | colony_number),
+                            random = list(block =~ 0+experiment_census_day, campus_location =~ 0+experiment_census_day),
+                            family = nb(),
+                            data = work_num)
+
+summary(gam_nb_treat_corar1_block_slope_CL$gam)
+
+summary(gam_nb_treat_corar1_block_slope_CL$lme)
+
+# without corAR1
+gam_nb_treat_corar1_block_slope_CL_no_corr <- gamm(worker_number ~ treatment + s(experiment_census_day) + s(experiment_census_day, by=treatment_ord),
+                            random = list(block =~ 0+experiment_census_day, campus_location =~ 0+experiment_census_day),
+                            family = nb(),
+                            data = work_num)
+
+summary(gam_nb_treat_corar1_block_slope_CL_no_corr$gam)
+
+summary(gam_nb_treat_corar1_block_slope_CL_no_corr$lme)
+```
+
+AIC lower for the model without corAR1 and phi=0. None of the estimates really change either. gamm specification agrees with the gam specification.
+
+Create my own visualisation for the fixed effect component with the observed values overlaid. As using gam or gamm doesn't change the conclusion it doesn't matter which one I select. I'll choose gam.
+
+```{r}
+final_model <- gam(worker_number ~ treatment +
+                                    s(experiment_census_day) +
+                                    s(experiment_census_day, by=treatment_ord) +
+                                    s(experiment_census_day, block, bs = "re") +
+                                    s(experiment_census_day, campus_location, bs = "re"),
+                    family = nb(),
+                    data = work_num)
+
+summary(final_model)
+
+plot(final_model, shade = TRUE, pages = 1, scale = 0, seWithMean = TRUE)
+
+# reorder so flup is reference
+# change treatment into an ordered factor and call it treatment_ord
+work_num$treatment_ord_flup_int <- ordered(work_num$treatment, levels = c("flup", "control", "sivanto"))
+
+final_model_flup_int <- gam(worker_number ~ relevel(treatment, "flup") +
+                                    s(experiment_census_day) +
+                                    s(experiment_census_day, by=treatment_ord_flup_int) +
+                                    s(experiment_census_day, block, bs = "re") +
+                                    s(experiment_census_day, campus_location, bs = "re"),
+                    family = nb(),
+                    data = work_num)
+
+summary(final_model_flup_int)
+```
+
+```{r}
+# predict model output
+D1_control <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$treatment == "control"]),
+                                                     max(work_num$experiment_census_day [work_num$treatment == "control"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "M",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_con <- setNames(as_tibble(predict(final_model,
+                                        D1_control,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        exclude = c("s(experiment_census_day,block)", "s(experiment_census_day,campus_location)"),
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_con <- mutate(ci_df_con,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$treatment == "control"),]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$treatment == "control"),]) -1) * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_flup <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$treatment == "flup"]),
+                                                     max(work_num$experiment_census_day [work_num$treatment == "flup"]), length.out = 200),
+                         treatment = "flup",
+                         treatment_ord = "flup",
+                         campus_location = "M",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_flup <- setNames(as_tibble(predict(final_model,
+                                        D1_flup,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        exclude = c("s(experiment_census_day,block)", "s(experiment_census_day,campus_location)"),
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_flup <- mutate(ci_df_flup,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$treatment == "flup"),]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$treatment == "flup"),]) -1) * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_sivanto <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$treatment == "sivanto"]),
+                                                     max(work_num$experiment_census_day [work_num$treatment == "sivanto"]), length.out = 200),
+                         treatment = "sivanto",
+                         treatment_ord = "sivanto",
+                         campus_location = "M",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_siv <- setNames(as_tibble(predict(final_model,
+                                        D1_sivanto,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        exclude = c("s(experiment_census_day,block)", "s(experiment_census_day,campus_location)"),
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_siv <- mutate(ci_df_siv,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$treatment == "sivanto"),]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$treatment == "sivanto"),]) -1) * se_link)))
+
+# ---------------------
+
+# combine line predictions
+ggplot_lines_df <- rbind(cbind(D1_control, ci_df_con), cbind(D1_flup, ci_df_flup), cbind(D1_sivanto, ci_df_siv))
+
+model_preds <- ggplot() + 
+      geom_point(data = work_num, aes(x = experiment_census_day, y = worker_number, color = treatment)) +
+      geom_line(data = ggplot_lines_df, aes(x = experiment_census_day, y = fit_resp, group = treatment, color = treatment)) +
+      #geom_ribbon(data = ggplot_lines_df, aes(x = experiment_census_day, y = fit_resp, ymin = right_lwr, ymax = right_upr,
+      #                                        group = treatment, color = treatment, fill = treatment), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#117733", "#332288", "#AA4499"), name = "Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      scale_fill_manual(values=c("#117733", "#332288", "#AA4499"), name = "Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      xlab("Experiment day") +
+      ylab("Worker number") +
+      ggtitle("Change in worker number over time by treatment")
+
+model_preds
+```
+
+The predictions for t=0 don't match the parametric coefficients. Why? Because they don't account for the spline functions
+
+[explanation](https://stats.stackexchange.com/questions/100425/prediction-from-gam-model-at-x-0-not-equal-to-intercept)
+
+Summary: it is nothing to worry about.
+
+Show the difference between block. treatment=control and campus_location=M.
+
+```{r}
+# predict model output
+D1_block_one <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$block == "1"]),
+                                                     max(work_num$experiment_census_day [work_num$block == "1"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "M",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_block_one <- setNames(as_tibble(predict(final_model,
+                                        D1_block_one,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_block_one <- mutate(ci_df_block_one,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$block == "1"),]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$block == "1"),]) -1) * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_block_two <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$block == "2"]),
+                                                     max(work_num$experiment_census_day [work_num$block == "2"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "M",
+                         block = "2"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_block_two <- setNames(as_tibble(predict(final_model,
+                                        D1_block_two,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_block_two <- mutate(ci_df_block_two,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$block == "2"),]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$block == "2"),]) -1) * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_block_three <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$block == "3"]),
+                                                     max(work_num$experiment_census_day [work_num$block == "3"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "M",
+                         block = "3"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_block_three <- setNames(as_tibble(predict(final_model,
+                                        D1_block_three,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_block_three <- mutate(ci_df_block_three,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$block == "3"),]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$block == "3"),]) -1) * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_block_four <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$block == "4"]),
+                                                     max(work_num$experiment_census_day [work_num$block == "4"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "M",
+                         block = "4"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_block_four <- setNames(as_tibble(predict(final_model,
+                                        D1_block_four,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_block_four <- mutate(ci_df_block_four,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$block == "4"),]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$block == "4"),]) -1) * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_block_five <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$block == "5"]),
+                                                     max(work_num$experiment_census_day [work_num$block == "5"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "M",
+                         block = "5"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_block_five <- setNames(as_tibble(predict(final_model,
+                                        D1_block_five,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_block_five <- mutate(ci_df_block_five,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$block == "5"),]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$block == "5"),]) -1) * se_link)))
+
+# ---------------------
+
+# combine line predictions
+ggplot_lines_df_block <- rbind(cbind(D1_block_one, ci_df_block_one), 
+                               cbind(D1_block_two, ci_df_block_two),
+                               cbind(D1_block_three, ci_df_block_three),
+                               cbind(D1_block_four, ci_df_block_four),
+                               cbind(D1_block_five, ci_df_block_five))
+
+model_preds_block <- ggplot() + 
+      geom_point(data = work_num, aes(x = experiment_census_day, y = worker_number, color = block)) +
+      geom_line(data = ggplot_lines_df_block, aes(x = experiment_census_day, y = fit_resp, group = block, color = block)) +
+      #geom_ribbon(data = ggplot_lines_df_block, aes(x = experiment_census_day, y = fit_resp, ymin = right_lwr, ymax = right_upr,
+      #                                        group = block, color = block, fill = block), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#44AA99", "#999933", "#882255", "#661100", "#6699CC"), name="Block") +
+      scale_fill_manual(values=c("#44AA99", "#999933", "#882255", "#661100", "#6699CC"), name="Block") +
+      xlab("Experiment day") +
+      ylab("Worker number") +
+      ggtitle("Change in worker number over time by block")
+
+model_preds_block
+```
+
+Show the difference between campus location. treatment=control and block=1.
+
+```{r}
+# predict model output
+D1_CL_M <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$campus_location == "M"]),
+                                                     max(work_num$experiment_census_day [work_num$campus_location == "M"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "M",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_CL_M <- setNames(as_tibble(predict(final_model,
+                                        D1_CL_M,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_CL_M <- mutate(ci_df_CL_M,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$campus_location == "M"),]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$campus_location == "M"),]) -1) * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_CL_WA <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$campus_location == "WA"]),
+                                                     max(work_num$experiment_census_day [work_num$campus_location == "WA"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "WA",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_CL_WA <- setNames(as_tibble(predict(final_model,
+                                        D1_CL_WA,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_CL_WA <- mutate(ci_df_CL_WA,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$campus_location == "WA"),]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$campus_location == "WA"),]) -1) * se_link)))
+
+# ---------------------
+
+# predict model output
+D1_CL_BA <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$campus_location == "BA"]),
+                                                     max(work_num$experiment_census_day [work_num$campus_location == "BA"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "BA",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_CL_BA <- setNames(as_tibble(predict(final_model,
+                                        D1_CL_BA,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_CL_BA <- mutate(ci_df_CL_BA,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$campus_location == "BA"),]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$campus_location == "BA"),]) -1) * se_link)))
+
+# ---------------------
+# predict model output
+D1_CL_BG <- data.frame(experiment_census_day = seq(min(work_num$experiment_census_day [work_num$campus_location == "BG"]),
+                                                     max(work_num$experiment_census_day [work_num$campus_location == "BG"]), length.out = 200),
+                         treatment = "control",
+                         treatment_ord = "control",
+                         campus_location = "BG",
+                         block = "1"
+                         )
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_CL_BG <- setNames(as_tibble(predict(final_model,
+                                        D1_CL_BG,
+                                        se.fit = TRUE,
+                                        type = "link",
+                                        #newdata.guaranteed=TRUE
+                                        )
+                                [1:2]),
+                      c('fit_link','se_link'))
+
+# note - You need to specify the strings in the vector passed to exclude
+# with the notation used by summary() when displaying the information about each smooth term
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_CL_BG <- mutate(ci_df_CL_BG,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$campus_location == "BG"),]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(work_num [(work_num$experiment_census_day == 0) & (work_num$campus_location == "BG"),]) -1) * se_link)))
+
+# ---------------------
+
+# combine line predictions
+ggplot_lines_df_CL <- rbind(cbind(D1_CL_M, ci_df_CL_M), 
+                               cbind(D1_CL_WA, ci_df_CL_WA),
+                               cbind(D1_CL_BA, ci_df_CL_BA),
+                               cbind(D1_CL_BG, ci_df_CL_BG))
+
+model_preds_CL <- ggplot() + 
+      geom_point(data = work_num, aes(x = experiment_census_day, y = worker_number, color = campus_location)) +
+      geom_line(data = ggplot_lines_df_CL, aes(x = experiment_census_day, y = fit_resp, group = campus_location, color = campus_location)) +
+      #geom_ribbon(data = ggplot_lines_df_CL, aes(x = experiment_census_day, y = fit_resp, ymin = right_lwr, ymax = right_upr,
+      #                                        group = campus_location, color = campus_location, fill = campus_location), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#888888", "#88CCEE", "#CC6677", "#DDCC77"), name="Campus Location", labels = c("1", "2", "3", "4")) +
+      scale_fill_manual(values=c("#888888", "#88CCEE", "#CC6677", "#DDCC77"), name="Campus Location", labels = c("1", "2", "3", "4")) +
+      xlab("Experiment day") +
+      ylab("Worker number") +
+      ggtitle("Change in worker number over time by campus location")
+
+model_preds_CL
+```
+
+Model output table
+
+```{r}
+final_model_worker_num_summary_tab <- broom.mixed::tidy(x = final_model_flup_int)
+
+library(kableExtra)
+
+options(knitr.kable.NA = '_')
+
+worker_number_model_pdf <- kbl(final_model_worker_num_summary_tab, digits = 3) %>%
+                                     kable_styling() %>%
+                                     add_header_above(header = c("Summary of GAMM for worker number" = 5))
+
+save_kable(worker_number_model_pdf, "output/worker_number_model.pdf")
+```
+
+Export worker number plot
+
+```{r}
+library(cowplot)
+
+# treatment
+pdf(file = "output/worker_number_treatment_plot.pdf",   # The directory you want to save the file in
+  width = 8, # The width of the plot in inches
+  height = 6) # The height of the plot in inches
+
+model_preds
+
+ dev.off()
+ 
+# block
+pdf(file = "output/worker_number_block_plot.pdf",   # The directory you want to save the file in
+  width = 8, # The width of the plot in inches
+  height = 6) # The height of the plot in inches
+
+model_preds_block
+
+ dev.off()
+ 
+# CL
+pdf(file = "output/worker_number_CL_plot.pdf",   # The directory you want to save the file in
+  width = 8, # The width of the plot in inches
+  height = 6) # The height of the plot in inches
+
+model_preds_CL
+
+ dev.off()
+
+```
+
+---------------------------------------------------
+Queen survival
+
+Import data
+
+```{r}
+queen_surv <- read.csv("./input/queen_survival.csv")
+
+# ensure variables are in correct class
+queen_surv$block <- as.factor(queen_surv$block)
+queen_surv$treatment <- as.factor(queen_surv$treatment)
+queen_surv$triad <- as.factor(queen_surv$triad)
+queen_surv$number_of_workers_at_exposure_start <- as.numeric(queen_surv$number_of_workers_at_exposure_start)
+queen_surv$wax_moth <- as.factor(queen_surv$wax_moth)
+queen_surv$queen_survival_days <- as.numeric(queen_surv$queen_survival_days)
+queen_surv$campus_location <- as.factor(queen_surv$campus_location)
+```
+
+Remove colony 57 due to accidental death and add column to indicate all the queens eventually died.
+
+```{r}
+queen_surv <- queen_surv [queen_surv$colony_number != "57", ]
+
+queen_surv$queen_death <- 1
+```
+
+Begin the analysis. Attempt to start with:
+
+col_surv ~ treatment + worker_num + wax_moth + worker_num:treatment + wax_moth:treatment + (1 | batch/triad)
+
+```{r}
+library(survival)
+library(coxme)
+
+cfit1 <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + number_of_workers_at_exposure_start + wax_moth + 
+                 number_of_workers_at_exposure_start:treatment + wax_moth:treatment + (1 | block/triad) + (1 | campus_location),
+               data=queen_surv)
+
+summary(cfit1)
+
+# model selection
+cfit2 <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + number_of_workers_at_exposure_start + wax_moth + 
+                 number_of_workers_at_exposure_start:treatment + (1 | block/triad) + (1 | campus_location),
+               data=queen_surv)
+
+anova(cfit1, cfit2)
+
+cfit3 <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + number_of_workers_at_exposure_start + wax_moth + wax_moth:treatment + (1 | block/triad) + (1 | campus_location),
+               data=queen_surv)
+
+anova(cfit1, cfit3)
+
+# dropped wax_moth:treatment
+cfit4 <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + number_of_workers_at_exposure_start + wax_moth + (1 | block/triad) + (1 | campus_location),
+               data=queen_surv)
+
+anova(cfit2, cfit4)
+
+cfit5 <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + number_of_workers_at_exposure_start + 
+                 number_of_workers_at_exposure_start:treatment + (1 | block/triad) + (1 | campus_location),
+               data=queen_surv)
+
+anova(cfit2, cfit5)
+
+# drop wax_moth
+cfit6 <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + number_of_workers_at_exposure_start + (1 | block/triad) + (1 | campus_location),
+               data=queen_surv)
+
+anova(cfit5, cfit6)
+
+# 0.02274 in multiple rounds of hypothesis testing is not a strong result. Dropped. 
+cfit7 <- coxme(Surv(queen_survival_days, queen_death) ~ treatment + (1 | block/triad) + (1 | campus_location),
+               data=queen_surv)
+
+anova(cfit6, cfit7)
+
+cfit8 <- coxme(Surv(queen_survival_days, queen_death) ~ number_of_workers_at_exposure_start + (1 | block/triad) + (1 | campus_location),
+               data=queen_surv)
+
+anova(cfit6, cfit8)
+
+# dropped number_of_workers_at_exposure_start
+cfit9 <- coxme(Surv(queen_survival_days, queen_death) ~ (1 | block/triad) + (1 | campus_location),
+               data=queen_surv)
+
+anova(cfit7, cfit9)
+
+# treatment not significant but kept in model due to experimental design.
+```
+
+Summary of treatment only model 
+
+```{r}
+cfit_treat <- coxme(Surv(queen_survival_days, queen_death) ~ relevel(treatment, "flup") + (1 | block/triad) + (1 | campus_location),
+               data=queen_surv)
+
+summary(cfit_treat)
+
+# removing random effect has no effect on coefficients.
+cfit_treat_no_ran <- coxph(Surv(queen_survival_days, queen_death) ~ relevel(treatment, "flup"),
+               data=queen_surv)
+
+summary(cfit_treat_no_ran)
+```
+
+The coefficients in a Cox regression relate to hazard; a positive coefficient indicates a worse prognosis and a negative coefficient indicates a protective effect of the variable with which it is associated.
+
+Model Validation: 
+
+zph() checks for proportionality assumption, by using the Schoenfeld residuals against the transformed time. Having very small p values indicates that there are time dependent coefficients which you need to take care of. That is to say, the proportionality assumption does not check linearity - the Cox PH model is semi parametric and thus makes no assumption as to the form of the hazard. The proportionality assumption is that the hazard rate of an individual is relatively constant in time, and this is what cox.zph() tests.
+
+A good [resource on checking assumptions of proportional hazards models](http://www.sthda.com/english/wiki/cox-model-assumptions#testing-proportional-hazards-assumption)
+
+```{r}
+# proportional hazards
+zp1 <- cox.zph(cfit_treat)
+zp1
+
+# plot(zp1[1], resid=TRUE)
+
+library(survminer)
+ggcoxzph(zp1)
+```
+
+Testing for influential observations - visualizing the deviance residuals. The deviance residual is a normalized transform of the martingale residual. These residuals should be roughly symmetrically distributed about zero with a standard deviation of 1.
+
+1. Positive values correspond to individuals that “died too soon” compared to expected survival times.
+2. Negative values correspond to individual that “lived too long”.
+3. Very large or small values are outliers, which are poorly predicted by the model.
+
+Unfortunately coxme objects can't be used for some of these check. Use cfit_treat_no_ran instead. Coefficients are the same as random effects model. 
+
+```{r}
+ggcoxdiagnostics(cfit_treat_no_ran, type = "deviance",
+                 linear.predictions = FALSE, ggtheme = theme_bw())
+```
+
+The dfbeta plot shows the effect dropping an observation has on the coefficients. Show there are two points that affect flup and sivanto coefficients respectively. Removing either only reduces the effect of the respective treatment group. Also, I have no reason to remove these observations from an experimental standpoint. Therefore, leave them in the analysis. 
+
+```{r}
+ggcoxdiagnostics(cfit_treat_no_ran, type = "dfbeta",
+                 linear.predictions = FALSE, ggtheme = theme_bw())
+```
+
+Linearity not an issue as there are no continuous variables. 
+
+Coxph plot
+
+```{r}
+library(survminer)
+
+# refit final model with coxph
+cfit_treat_no_ran <- coxph(Surv(queen_survival_days, queen_death) ~ treatment,
+               data=queen_surv)
+
+fit2 <- survfit(cfit_treat_no_ran, newdata=data.frame(treatment=c("control", "flup", "sivanto")))
+```
+
+```{r}
+p1_surv_treat <- ggsurvplot(fit2,
+                data = queen_surv,
+                conf.int = TRUE,
+                palette = c("#117733", "#332288", "#AA4499"),
+                legend.labs = c("Control", "Flupyradifurone", "Sivanto"),
+                xlab = "Time (days)",
+                ylab = "Probability of queen survival",
+                legend = c(0.8, 0.3),
+                legend.title = "",
+                title = "Queen survival by treatment")
+
+p1_surv_treat <- p1_surv_treat$plot +
+  theme_bw() +
+  theme(plot.title = element_text(size = 12),
+        panel.grid = element_blank(),
+        legend.position= "top")
+
+p1_surv_treat
+```
+
+```{r}
+# treatment
+pdf(file = "output/queen_survival_plot.pdf",   # The directory you want to save the file in
+  width = 8, # The width of the plot in inches
+  height = 6) # The height of the plot in inches
+
+p1_surv_treat
+
+ dev.off()
+```
+
+Model output table
+
+```{r}
+final_model_queen_surv_summary_tab <- broom.mixed::tidy(x = cfit_treat_no_ran)
+
+library(kableExtra)
+
+options(knitr.kable.NA = '_')
+
+queen_surv_model_pdf <- kbl(final_model_queen_surv_summary_tab, digits = 3) %>%
+                                     kable_styling() %>%
+                                     add_header_above(header = c("Summary of Cox proportional hazards model for queen survival" = 5))
+
+save_kable(queen_surv_model_pdf, "output/queen_survival_model.pdf")
+```
+
+---------------------------------------------------
+Colony survival
+
+Two sources I used for below info 
+
+[link 1](https://rpubs.com/daspringate/survival)
+[link 2](https://thomaselove.github.io/432-notes/cox-regression-models-for-survival-data-example-1.html)
+
+Hazard Function
+Survival models can be viewed as consisting of two parts: the underlying hazard function, describing how the risk of event per time unit changes over time at baseline levels of covariates; and the effect parameters, describing how the hazard varies in response to explanatory covariates.
+
+h(t|x) = h0(t) exp[B1.x]
+
+h0(t) = is the baseline hazard, which is a non-parametric and unspecified value which depends on t but not on x.
+
+exp[B1.x] = how the baseline hazard is modified as x changes. 
+
+It is a semi-parametric model:
+
+The baseline hazard function is unspecified
+The effects of the covariates are multiplicative (proportional assumption)
+Doesn't make arbitrary assumptions about the shape/form of the baseline hazard function
+
+Proportionality Assumption
+In a proportional hazards model, the unique effect of a unit increase in a covariate is multiplicative with respect to the hazard rate. For example, taking a drug may halve one’s hazard rate for a stroke occurring, or, changing the material from which a manufactured component is constructed may double its hazard rate for failure.
+
+Covariates multiply the hazard by some constant
+e.g. a drug may halve a subjects risk of death at any time
+*The effect is the same at any time point*
+
+Accounting for non-proportional hazards
+Include an interaction with time for the variables:
+This factors time out of the main effect
+Only use if it makes sense to have a linear interaction between the covariate and time (look at the graphs!)
+
+Import data
+
+```{r}
+col_surv <- read.csv("./input/colony_survival.csv")
+
+# ensure variables are in correct class
+col_surv$block <- as.factor(col_surv$block)
+col_surv$treatment <- as.factor(col_surv$treatment)
+col_surv$triad <- as.factor(col_surv$triad)
+col_surv$number_of_workers_at_exposure_start <- as.numeric(col_surv$number_of_workers_at_exposure_start)
+col_surv$wax_moth <- as.factor(col_surv$wax_moth)
+col_surv$colony_survival_days <- as.numeric(col_surv$colony_survival_days)
+```
+
+I used the example dataset "ovarian" in the survival package to set up my data. In a really old (1999) version of the survival package vignette I found the definition of fustat and futime. 
+
+futime: The number of days from enrollment until death or censoring, whichever
+came first.
+
+fustat: An indicator of death (1) or censoring (0).
+
+Therefore my data should have columns for survivalday and death
+
+In death column death = 1, censoring = 0. As they all died eventually simply a column of 1s.
+
+```{r}
+col_surv$col_death <- 1
+```
+
+Remove colony 57 as the queen was accidentally killed.
+
+```{r}
+col_surv <- col_surv [col_surv$colony_number != "57",]
+```
+
+Begin the analysis. Attempt to start with:
+
+col_surv ~ treatment + worker_num + wax_moth + worker_num:treatment + wax_moth:treatment + (1 | batch/triad)
+
+```{r}
+library(survival)
+library(coxme)
+
+cfit1 <- coxme(Surv(colony_survival_days, col_death) ~ treatment + number_of_workers_at_exposure_start + wax_moth + 
+                 number_of_workers_at_exposure_start:treatment + wax_moth:treatment + (1 | block/triad) + (1 | campus_location),
+               data=col_surv)
+
+# summary(cfit1)
+
+# model selection
+cfit2 <-  coxme(Surv(colony_survival_days, col_death) ~ treatment + number_of_workers_at_exposure_start + wax_moth + 
+                 number_of_workers_at_exposure_start:treatment + (1 | block/triad) + (1 | campus_location),
+               data=col_surv)
+
+anova(cfit1, cfit2)
+
+cfit3 <- coxme(Surv(colony_survival_days, col_death) ~ treatment + number_of_workers_at_exposure_start + wax_moth + 
+                 wax_moth:treatment + (1 | block/triad) + (1 | campus_location),
+               data=col_surv)
+
+anova(cfit1, cfit3)
+
+# removed wax_moth:treatment
+cfit4 <-  coxme(Surv(colony_survival_days, col_death) ~ treatment + number_of_workers_at_exposure_start + wax_moth + (1 | block/triad) + (1 | campus_location),
+               data=col_surv)
+
+anova(cfit2, cfit4)
+
+cfit5 <-  coxme(Surv(colony_survival_days, col_death) ~ treatment + number_of_workers_at_exposure_start + 
+                 number_of_workers_at_exposure_start:treatment + (1 | block/triad) + (1 | campus_location),
+               data=col_surv)
+
+anova(cfit2, cfit5)
+
+# removed wax_moth
+cfit6 <-  coxme(Surv(colony_survival_days, col_death) ~ treatment + number_of_workers_at_exposure_start + (1 | block/triad) + (1 | campus_location),
+               data=col_surv)
+
+anova(cfit5, cfit6)
+
+# removed number_of_workers_at_exposure_start:treatment
+cfit7 <-  coxme(Surv(colony_survival_days, col_death) ~ treatment + (1 | block/triad) + (1 | campus_location),
+               data=col_surv)
+
+anova(cfit6, cfit7)
+
+# dropped number_of_workers_at_exposure_start
+cfit8 <-  coxme(Surv(colony_survival_days, col_death) ~ (1 | block/triad) + (1 | campus_location),
+               data=col_surv)
+
+anova(cfit7, cfit8)
+
+# treatment is not significant either but leave in model as this is the variable of interest. 
+```
+
+Summary of treatment only model 
+
+```{r}
+cfit_treat <-  coxme(Surv(colony_survival_days, col_death) ~ relevel(treatment, "flup") + (1 | block/triad) + (1 | campus_location),
+               data=col_surv)
+
+summary(cfit_treat)
+
+# relevel so flup is the reference
+cfit_treat_no_ran <- coxph(Surv(colony_survival_days, col_death) ~ relevel(treatment, "flup"),
+               data=col_surv)
+
+summary(cfit_treat_no_ran)
+```
+
+The coefficients in a Cox regression relate to hazard; a positive coefficient indicates a worse prognosis and a negative coefficient indicates a protective effect of the variable with which it is associated.
+
+Model Validation: 
+
+zph() checks for proportionality assumption, by using the Schoenfeld residuals against the transformed time. Having very small p values indicates that there are time dependent coefficients which you need to take care of. That is to say, the proportionality assumption does not check linearity - the Cox PH model is semi parametric and thus makes no assumption as to the form of the hazard. The proportionality assumption is that the hazard rate of an individual is relatively constant in time, and this is what cox.zph() tests.
+
+A good [resource on checking assumptions of proportional hazards models](http://www.sthda.com/english/wiki/cox-model-assumptions#testing-proportional-hazards-assumption)
+
+```{r}
+# proportional hazards
+zp1 <- cox.zph(cfit_treat)
+zp1
+
+# plot(zp1[1], resid=TRUE)
+
+library(survminer)
+ggcoxzph(zp1)
+```
+
+Testing for influential observations - visualizing the deviance residuals. The deviance residual is a normalized transform of the martingale residual. These residuals should be roughtly symmetrically distributed about zero with a standard deviation of 1.
+
+1. Positive values correspond to individuals that “died too soon” compared to expected survival times.
+2. Negative values correspond to individual that “lived too long”.
+3. Very large or small values are outliers, which are poorly predicted by the model.
+
+Unfortunately coxme objects can't be used for some of these check. Use cfit_treat_no_ran instead. Coefficients are pretty similar to random effects model. 
+
+```{r}
+ggcoxdiagnostics(cfit_treat_no_ran, type = "deviance",
+                 linear.predictions = FALSE, ggtheme = theme_bw())
+```
+
+The dfbeta plot shows the effect dropping an observation has on the coefficients. Shows there are two points that affect the flup coefficient strongly. Removing these two points only increases flup's "protective" effect. Also, I have no reason to exclude them from an experimental standpoint. For these reasons, leave them in. 
+
+```{r}
+ggcoxdiagnostics(cfit_treat_no_ran, type = "dfbeta",
+                 linear.predictions = FALSE, ggtheme = theme_bw())
+```
+
+Coxph plot
+
+```{r}
+library(survminer)
+
+# refit final model with coxph
+cfit_treat_no_ran <- coxph(Surv(colony_survival_days, col_death) ~ treatment,
+               data=col_surv)
+
+fit2 <- survfit(cfit_treat_no_ran, newdata=data.frame(treatment=c("control", "flup", "sivanto")))
+```
+
+```{r}
+p1_surv_treat_col <- ggsurvplot(fit2,
+                data = col_surv,
+                conf.int = TRUE,
+                palette = c("#117733", "#332288", "#AA4499"),
+                legend.labs = c("Control", "Flupyradifurone", "Sivanto"),
+                xlab = "Time (days)",
+                ylab = "Probability of colony survival",
+                legend = c(0.8, 0.3),
+                legend.title = "",
+                title = "Colony survival by treatment")
+
+p1_surv_treat_col <- p1_surv_treat_col$plot +
+  theme_bw() +
+  theme(plot.title = element_text(size = 12),
+        panel.grid = element_blank(),
+        legend.position= "top")
+
+p1_surv_treat_col
+```
+
+```{r}
+# treatment
+pdf(file = "output/colony_survival_plot.pdf",   # The directory you want to save the file in
+  width = 8, # The width of the plot in inches
+  height = 6) # The height of the plot in inches
+
+p1_surv_treat_col
+
+ dev.off()
+```
+
+Model output table
+
+```{r}
+final_model_colony_surv_summary_tab <- broom.mixed::tidy(x = cfit_treat_no_ran)
+
+library(kableExtra)
+
+options(knitr.kable.NA = '_')
+
+colony_surv_model_pdf <- kbl(final_model_colony_surv_summary_tab, digits = 3) %>%
+                                     kable_styling() %>%
+                                     add_header_above(header = c("Summary of Cox proportional hazards model for colony survival" = 5))
+
+save_kable(colony_surv_model_pdf, "output/colony_survival_model.pdf")
+```
+
+Combined plot
+
+```{r}
+library(cowplot)
+
+pdf(file = "output/survival_plot_combined.pdf",   # The directory you want to save the file in
+  width = 8, # The width of the plot in inches
+  height = 6) # The height of the plot in inches
+
+plot_grid(p1_surv_treat, p1_surv_treat_col, labels = c('A', 'B'))
+
+ dev.off()
+```
+
+---------------------------------------------------
+Nectar pot number
+
+```{r}
+pot_num <- read.csv("input/nectar_pot_number.csv")
+
+work_num <- read.csv("../worker_number/input/worker_number.csv")
+
+pot_num$worker_number <- work_num$worker_number
+```
+
+Remove colony 57 due to early queen death and sort variable classes.
+
+```{r}
+pot_num <- pot_num [pot_num$colony_number != "57", ]
+
+pot_num$block <- as.factor(pot_num$block)
+
+pot_num$treatment <- as.factor(pot_num$treatment)
+
+pot_num$triad <- as.factor(pot_num$triad)
+
+pot_num$experiment_census_day <- as.numeric(pot_num$experiment_census_day)
+
+pot_num$wax_moth <- as.factor(pot_num$wax_moth)
+
+pot_num$nectar_pot_number <- as.numeric(pot_num$nectar_pot_number)
+
+pot_num$campus_location <- as.factor(pot_num$campus_location)
+
+pot_num$number_of_workers_at_exposure_start <- as.numeric(pot_num$number_of_workers_at_exposure_start)
+
+pot_num$colony_number <- as.factor(pot_num$colony_number)
+
+pot_num$worker_number <- as.numeric(pot_num$worker_number)
+```
+
+Visualisations
+
+```{r}
+library(lattice)
+
+MyLines <- function(xi, yi, ...){
+  I <- order(xi)
+  panel.lines(xi[I], yi[I], col = 1)
+}
+
+# by treatment once they were in the field
+xyplot(nectar_pot_number ~ experiment_census_day [experiment_census_day > 10] | treatment, data = pot_num,
+       groups = colony_number, xlab = "Day", ylab = "Nectar Pot Number",
+       panel = panel.superpose,
+       panel.groups = MyLines)
+```
+
+I think this plot shows what an unreliable variable nectar pot number is. My process when counting nectar pot number involved only counting those more than half full. However, they all vary in size considerably, meaning the volume of nectar held in each pot is extremely variable. So much so that one large nectar pot could hold the equivalent volume of nectar as five small nectar pots. This underlines the futility of a too in depth analysis into this variable.
+
+Maybe look at the maximum number of nectar pots for each colony. As this is a single point estimate it may be less choppy than the time series data and may indicate whether the insecticide treatments had an effect on foraging capacity. Remove days 0 and 7 as colonies were still in the lab.
+
+For this to work it should have an offset variable for the number of works present at that time.
+
+```{r}
+library(tidyverse)
+
+# remove censuses from day 0 and 7.
+pot_num <- pot_num [pot_num$experiment_census_day != 0, ]
+
+pot_num <- pot_num [pot_num$experiment_census_day != 7, ]
+
+
+# determine the max number of nectar pots
+col_num <- unique(pot_num$colony_number)
+
+pot_num_max_pot <- tibble()
+
+for (i in 1:length(col_num)) {
+  
+  by_col <- pot_num [pot_num$colony_number == col_num [i], ]
+  
+  by_col$max_pot <- max(by_col$nectar_pot_number)
+  
+  pot_num_max_pot <- rbind(pot_num_max_pot, by_col)
+  
+}
+
+# use this df.
+# max_pot <- pot_num_max_pot [pot_num_max_pot$experiment_census_day == 0,]
+
+# get the max number of nectar pots with the number of workers on that day
+library(tidyverse)
+
+max_pot <- tibble()
+
+for (i in 1:nrow(pot_num_max_pot)) {
+  
+  if(pot_num_max_pot$nectar_pot_number [i] == pot_num_max_pot$max_pot [i]) {
+    
+    row_match <- pot_num_max_pot [i, ]
+    
+    max_pot <- rbind(max_pot, row_match)
+
+  }
+  
+
+}
+
+# select the earliest day for each colony for when the max pot occurred. 
+# at least this is consistent
+max_pot_filtered <- tibble()
+
+for (i in 1:length(col_num)) {
+  
+  by_col <- max_pot [max_pot$colony_number == col_num [i], ]
+  
+  by_col <- by_col [order(by_col$experiment_census_day),]
+  
+  by_col <- by_col [1, ]
+  
+  max_pot_filtered <- rbind(max_pot_filtered, by_col)
+  
+}
+
+max_pot <- max_pot_filtered
+```
+
+Boxplots
+
+```{r}
+boxplot(max_pot~treatment,
+        varwidth=TRUE,
+        data = max_pot)
+
+boxplot(max_pot~block,
+        varwidth=TRUE,
+        data = max_pot)
+
+boxplot(max_pot~campus_location,
+        varwidth=TRUE,
+        data = max_pot)
+```
+
+Start off with a simple poisson model.
+
+```{r}
+library(glmmTMB)
+
+f1 <- formula(max_pot ~ treatment + offset(log(worker_number)) + (1|block/triad) + (1|campus_location))
+
+f2 <- formula(max_pot ~ relevel(treatment, "flup") + offset(log(worker_number)) + (1|block/triad) + (1|campus_location))
+
+# poisson
+m_poisson <- glmmTMB(f1,
+              data = max_pot,
+              family = "poisson")
+
+summary(m_poisson)
+```
+
+Check for overdispersion using the pearson dispersion statistic.
+
+```{r}
+dispfun <- function(m) {
+    r <- residuals(m,type="pearson")
+    n <- df.residual(m)
+    dsq <- sum(r^2)
+    c(dsq=dsq,n=n,disp=dsq/n)
+}
+
+sapply(list(poisson=m_poisson),dispfun)
+
+```
+
+glmmTMB will fit two parameterizations of the negative binomial: family="nbinom2" gives the classic parameterization with σ2=μ(1+μ/k) (“NB2” in Hardin and Hilbe’s terminology) while family="nbinom1" gives a parameterization with σ2=ϕμ, ϕ>1 (“NB1” to Hardin and Hilbe). The latter might also be called a “quasi-Poisson” parameterization because it matches the mean-variance relationship assumed by quasi-Poisson models, i.e. the variance is strictly proportional to the mean (although the proportionality constant must be >1, a limitation that does not apply to quasi-likelihood approaches).
+
+```{r}
+# nb1
+m_nb1 <- glmmTMB(f1,
+              data = max_pot,
+              family = "nbinom1")
+
+summary(m_nb1)
+```
+
+Residual plots. Nothing jumps out apart from one large outlier, the colony with 36 nectar pots when there were only 27 workers. However, there is no reason for me to remove this observation. Also, removing it doesn't change the conclusions. Residual vs fitted tends towards overestimation for larger values but not serious enough to worry about for this secondary analysis.
+
+```{r}
+fitted <- predict(m_nb1, type = "response")
+
+E <- resid(m_nb1, type = "pearson")
+
+# resid vs fitted
+plot(x = fitted, y = E)
+abline(0,0)
+
+# resid vs treatment
+boxplot(E~treatment,
+        varwidth=TRUE,
+        data = max_pot)
+
+# resid vs block
+boxplot(E~block,
+        varwidth=TRUE,
+        data = max_pot)
+
+# resid vs campus_location
+boxplot(E~campus_location,
+        varwidth=TRUE,
+        data = max_pot)
+```
+
+Predictions for the offset variable model
+
+```{r}
+# create a new df
+newdata_df <- data.frame(treatment = c("control", "flup", "sivanto"),
+                         block = rep(1,3),
+                         campus_location = rep("M", 3),
+                         worker_number = rep(1, 3),
+                         triad = rep(1,3))
+
+# always extract predictions on the link scale process accordingly. 
+predictions <- data.frame(predict(m_nb1, newdata_df, type = "link", re.form = NA, se.fit = TRUE))
+
+predictions <- cbind(n = c(20,19,20), predictions)
+
+ilink <- family(m_nb1)$linkinv
+
+predictions <- mutate(predictions,
+                fit_resp  = ilink(fit),
+                right_upr = ilink(fit + (-qt(.025, df = predictions$n -1) * se.fit)),
+                right_lwr = ilink(fit - (-qt(.025, df = predictions$n -1) * se.fit)))
+
+pred_by_treat <- cbind(newdata_df, predictions)
+```
+
+```{r}
+# model output plot
+
+model_output <- ggplot() +
+  
+  geom_point(data = max_pot,
+             aes(x = treatment, y = max_pot/worker_number, color = treatment),
+             alpha = 0.4,
+             position  = position_jitterdodge(),
+             show.legend = FALSE) +
+  
+  geom_errorbar(data = pred_by_treat,
+                aes(x = treatment,
+                    ymin = right_lwr,
+                    ymax = right_upr,
+                    colour = as.factor(treatment)),
+                position = position_dodge(width = 0.75),
+                width = 0.05, 
+                size = 0.8) +
+  
+  geom_point(data = pred_by_treat,
+             aes(x = treatment,
+                 y = fit_resp,
+                 colour = as.factor(treatment)),
+             size = 3) +
+  
+  scale_color_manual(values=c("#117733", "#332288", "#AA4499"),
+                     name="Treatment",
+                     labels = c("Control", "FPF", "Sivanto")) +
+  
+  theme_bw() + 
+  
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  
+  labs(y = "Maximum nectar pot number per worker", x = "Treatment") +
+  
+  scale_x_discrete(labels = c("Control", "FPF", "Sivanto")) +
+  
+  # geom_segment(aes(x=1.1, xend=2.9, y=35, yend=35)) +
+  
+  # geom_segment(aes(x=1.1, xend=1.9, y=31, yend=31)) +
+  
+  #annotate("text",
+  #         x = c(1.5, 2),
+  #         y = c(32, 36),
+  #         label = c("p = 0.864","p = 0.347"),
+  #         family = "", fontface = 3, size=4) +
+  
+  ggtitle("Maximum nector pot number per worker for each treatment group")
+  
+  # annotate(geom = "text", x = 2.65, y = 37, label = "bold('Control vs Sivanto,')~bolditalic('p')~bold('= 0.0207')", fontface = 2, size = 6, parse = TRUE)
+
+  model_output
+```
+
+```{r}
+# treatment
+pdf(file = "output/nectar_pot_plot.pdf",   # The directory you want to save the file in
+  width = 8, # The width of the plot in inches
+  height = 6) # The height of the plot in inches
+
+model_output
+
+ dev.off()
+```
+
+Model output table
+
+```{r}
+m_nb1 <- glmmTMB(f2,
+              data = max_pot,
+              family = "nbinom1")
+
+final_model_nectar_pot_summary_tab <- broom.mixed::tidy(x = m_nb1)
+
+final_model_nectar_pot_summary_tab [4, 4] <- paste("triad:block.", final_model_nectar_pot_summary_tab [4, 4], sep = "")
+
+final_model_nectar_pot_summary_tab [5, 4] <- paste("block.", final_model_nectar_pot_summary_tab [5, 4], sep = "")
+
+final_model_nectar_pot_summary_tab [6, 4] <- paste("campus_location.", final_model_nectar_pot_summary_tab [6, 4], sep = "")
+
+final_model_nectar_pot_summary_tab <- final_model_nectar_pot_summary_tab [, -c(1:3)]
+
+library(kableExtra)
+
+options(knitr.kable.NA = '_')
+
+nectar_pot_model_pdf <- kbl(final_model_nectar_pot_summary_tab, digits = 3) %>%
+                                     kable_styling() %>%
+                                     add_header_above(header = c("Summary of quasi-poisson model for maximum nectar pot number" = 5))
+
+save_kable(nectar_pot_model_pdf, "output/nectar_pot_model.pdf")
+```
+
+---------------------------------------------------
+Insecticide consumption
+
+Import
+
+```{r}
+insecticide_consumption <- read.csv("./input/total_insecticide_dose.csv")
+```
+
+Remember only 39 observations as the controls have been removed
+
+Ensure variables have correct class. 
+
+```{r}
+library(tidyverse)
+
+# change name to make it easier to recycle code from other markdowns
+colnames(insecticide_consumption) [colnames(insecticide_consumption) == "total_insecticide_dose"] <- "summed_consumption"
+
+# make sure variable classes are correct
+insecticide_consumption$block <- as.factor(insecticide_consumption$block)
+class(insecticide_consumption$block)
+
+insecticide_consumption$treatment <- as.factor(insecticide_consumption$treatment)
+class(insecticide_consumption$treatment)
+
+insecticide_consumption$triad <- as.factor(insecticide_consumption$triad)
+class(insecticide_consumption$triad)
+
+class(insecticide_consumption$summed_consumption)
+
+insecticide_consumption$number_of_workers_at_exposure_start <- as.numeric(insecticide_consumption$number_of_workers_at_exposure_start)
+class(insecticide_consumption$number_of_workers_at_exposure_start)
+```
+
+Sort out the cleveland dotplot encoding. 
+
+```{r}
+# for a cleveland dotplot to work treatment has to be coded 1-2. 
+insecticide_consumption$clevelandcode <- 0 
+
+for (i in 1:nrow(insecticide_consumption)) {
+  
+  if (insecticide_consumption$treatment [i] == "flup") {
+    
+    insecticide_consumption$clevelandcode [i] <- 1
+    
+    }
+  
+  if (insecticide_consumption$treatment [i] == "sivanto") {
+    
+    insecticide_consumption$clevelandcode [i] <- 2
+    
+    }
+  
+}
+
+# should be numeric already anyway
+insecticide_consumption$clevelandcode <- as.numeric(insecticide_consumption$clevelandcode)
+```
+
+Use a cleveland dotplot to identify any obvious outliers. 
+
+```{r}
+dotchart(insecticide_consumption$summed_consumption,
+         groups = factor(insecticide_consumption$clevelandcode),
+         ylab = "Order of observations",
+         xlab = "Consumption (µg)", main = "Cleveland dotplot", pch = insecticide_consumption$clevelandcode)
+```
+
+There does not appear to be any obvious outliers. Maybe consumption is slightly lower for sivanto than the other treatment group?
+
+Have a look at some boxplots
+
+```{r}
+boxplot(summed_consumption ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Consumption Conditional on Treatment", 
+        ylab = "Consumption", data = insecticide_consumption)
+```
+
+Also want to show consumption vs number_of_workers_exposure_start for each treatment.
+
+```{r}
+# by treatment
+coplot(summed_consumption ~ number_of_workers_at_exposure_start | treatment, data = insecticide_consumption)
+
+plot(x = insecticide_consumption$number_of_workers_at_exposure_start,
+     y = insecticide_consumption$summed_consumption,
+     xlab = "starting_worker_number",
+     ylab = "insecticide_consumption")
+```
+
+I'm going to exclude C17 again as the queen died early on in the exposure regime and it looks like an outlier. Fit beyond optimal model and look at residual plots.
+
+```{r}
+# remove C17
+insecticide_consumption <- insecticide_consumption [insecticide_consumption$colony_number != "17", ]
+
+# fit beyond optimal model with gls
+library(nlme)
+
+# use this for the better resid vs fitted plot
+M1 <- lm(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = insecticide_consumption)
+
+# unhash this for the summary
+summary(M1)
+
+# extract residuals from this model. At this stage the ordinary residuals are fine.
+# once a variance structure has been applied we'll have to use standardised residuals
+# where the ordinary residuals are divided by the square root of the variance. 
+# NOTE - standardised residuals = normalised residuals = Pearson residuals (if Poisson GLM).
+E <- resid(M1)
+
+# plot residual vs fitted
+plot(M1, which = c (1))
+
+# plot residual vs treatment
+boxplot(E ~ insecticide_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = insecticide_consumption$number_of_workers_at_exposure_start,
+     y = E,
+     xlab = "starting_worker_number",
+     ylab = "Ordinary Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Ordinary residuals", data = insecticide_consumption)
+
+# redefine model with gls
+M1 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = insecticide_consumption, method = "REML")
+
+summary(M1)
+```
+
+Looks like variance increases with starting worker number. Try varPower and varExp
+
+```{r}
+M2 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = insecticide_consumption, method = "REML",
+          weights = varPower(form =~ number_of_workers_at_exposure_start))
+
+summary(M2)
+
+anova(M1, M2)
+
+M3 <- gls(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+          data = insecticide_consumption, method = "REML",
+          weights = varExp(form =~ number_of_workers_at_exposure_start))
+
+summary(M3)
+
+anova(M1, M3)
+```
+
+Neither significant but both have slightly lower AICs. look at the residual plots
+
+```{r}
+E2 <- resid(M2, type = "normalized")
+
+# plot residual vs fitted
+plot(M2, which = c (1))
+
+# plot residual vs treatment
+boxplot(E2 ~ insecticide_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = insecticide_consumption$number_of_workers_at_exposure_start,
+     y = E2,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E2 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = insecticide_consumption)
+```
+
+```{r}
+E3 <- resid(M3, type = "normalized")
+
+# plot residual vs fitted
+plot(M3, which = c (1))
+
+# plot residual vs treatment
+boxplot(E3 ~ insecticide_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = insecticide_consumption$number_of_workers_at_exposure_start,
+     y = E3,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E3 ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = insecticide_consumption)
+```
+
+The cone shape pattern in the residual vs fitted has gone. Pick varPower as the AIC is slightly lower. Look at residuals by block. 
+
+```{r}
+# standardised residuals for M1 vs triad
+E_standard <- resid(M1, type = "normalized")
+
+boxplot(E_standard ~ block, data = insecticide_consumption, axes = TRUE,
+        cex.axis=0.75,
+        ylab = 'Standardized residuals')
+abline(0,0)
+```
+
+Include block as it is part of experimental design
+
+```{r}
+M4 <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+              data = insecticide_consumption,
+              random =~ 1 | block, method = "REML",
+              weights = varPower(form =~ number_of_workers_at_exposure_start))
+```
+
+So M4 is our final random structure. Now let's begin with finding the optimal fixed structure.
+
+```{r}
+M4 <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start + treatment:number_of_workers_at_exposure_start,
+              data = insecticide_consumption,
+              random =~ 1 | block, method = "ML",
+              weights = varPower(form =~ number_of_workers_at_exposure_start))
+
+M4a <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start,
+              data = insecticide_consumption,
+              random =~ 1 | block, method = "ML",
+              weights = varPower(form =~ number_of_workers_at_exposure_start))
+
+anova(M4, M4a)
+
+# the interaction term is not significant
+M4aa <- lme(summed_consumption ~ number_of_workers_at_exposure_start,
+              data = insecticide_consumption,
+              random =~ 1 | block, method = "ML",
+              weights = varPower(form =~ number_of_workers_at_exposure_start))
+
+
+M4ab <- lme(summed_consumption ~ treatment,
+              data = insecticide_consumption,
+              random =~ 1 | block, method = "ML",
+              weights = varPower(form =~ number_of_workers_at_exposure_start))
+
+anova(M4a, M4aa)
+
+anova(M4a, M4ab)
+```
+
+Both terms were significant so the final model is M4a
+
+```{r}
+# redefine with REML
+M4a <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start,
+              data = insecticide_consumption,
+              random =~ 1 | block, method = "REML",
+              weights = varPower(form =~ number_of_workers_at_exposure_start))
+
+summary(M4a)
+
+# centre starting worker number
+insecticide_consumption$swn_centred <- insecticide_consumption$number_of_workers_at_exposure_start - mean(insecticide_consumption$number_of_workers_at_exposure_start)
+
+M4a_centred <- lme(summed_consumption ~ treatment + swn_centred,
+              data = insecticide_consumption,
+              random =~ 1 | block, method = "REML",
+              weights = varPower(form =~ number_of_workers_at_exposure_start))
+
+summary(M4a_centred)
+```
+
+Have a look at the residual plots.
+
+```{r}
+E4a_centred <- resid(M4a_centred, type = "normalized")
+
+# plot residual vs fitted
+plot(M4a_centred, which = c (1))
+
+# plot residual vs treatment
+boxplot(E4a_centred ~ insecticide_consumption$treatment, main = "Treatment")
+abline(0, 0)
+
+# plot residual vs number_of_workers_at_exposure_start
+plot(x = insecticide_consumption$number_of_workers_at_exposure_start,
+     y = E4a_centred,
+     xlab = "starting_worker_number",
+     ylab = "Normalised Residuals")
+
+# plot residual vs number_of_workers_at_exposure_start by treatment
+coplot(E4a_centred ~ number_of_workers_at_exposure_start | treatment,
+       ylab = "Normalised Residuals", data = insecticide_consumption)
+
+# qqplot
+qqnorm(M4a_centred)
+```
+
+Add sample size to each row so CIs can be calculated more accurately.
+
+```{r}
+# create n column in insecticide consumption for each treatment group
+insecticide_consumption$treatment_n <- 0
+
+for (i in 1:nrow(insecticide_consumption)) {
+  
+  if (insecticide_consumption$treatment [i] == "flup") {
+    
+    insecticide_consumption$treatment_n [i] <- nrow(insecticide_consumption [insecticide_consumption$treatment == "flup", ])
+    
+  }
+  
+  if (insecticide_consumption$treatment [i] == "sivanto") {
+    
+    insecticide_consumption$treatment_n [i] <- nrow(insecticide_consumption [insecticide_consumption$treatment == "sivanto", ])
+    
+  }
+  
+}
+```
+
+Namely, if you set level to 0 you get the predictions for which the random effects are set to zero. In the case of linear mixed models, these correspond to population predictions.
+
+```{r}
+# redefine
+final_model <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start,
+              data = insecticide_consumption,
+              random =~ 1 | block, method = "REML",
+              weights = varPower(form =~ number_of_workers_at_exposure_start))
+
+# summary(final_model)
+
+# calculate standard error for each point. 
+# Design matrix for our observations
+xmat <- model.matrix(~ treatment + number_of_workers_at_exposure_start, data=insecticide_consumption)
+
+# Regression coefficients
+# betahat <- coef(final_model)
+
+# Predictions
+insecticide_consumption$predictions <- predict(final_model, level = 0)
+# cbind(head(xmat%*%betahat), head(predictions))
+
+# Sigma^
+Sigmahat <- vcov(final_model)
+
+# var/cov(beta0 + beta1*X)
+varcovEYhat <- xmat%*%Sigmahat%*%t(xmat)
+
+# Pull off the diagonal elements and take their sqrt to 
+# get SEs that quantify uncertainty associated with the line
+SEline <- sqrt(diag(varcovEYhat))
+
+# Confidence interval for the mean
+insecticide_consumption$upconf <- insecticide_consumption$predictions + (-qt(.025, df = insecticide_consumption$treatment_n -1) * SEline)
+insecticide_consumption$lowconf <- insecticide_consumption$predictions - (-qt(.025, df = insecticide_consumption$treatment_n -1) * SEline)
+
+treatment_levs <- unique(insecticide_consumption$treatment)
+
+treatment_preds_df <- tibble()
+
+for (i in 1:length(treatment_levs)) {
+  
+  # order predictions according to treatment
+  treatment_preds <- insecticide_consumption [insecticide_consumption$treatment == treatment_levs [i],]
+  
+  # sort values by number of workers size
+  treatment_preds <- treatment_preds [order(treatment_preds$number_of_workers_at_exposure_start),]
+  
+  treatment_preds_df <- rbind(treatment_preds_df, treatment_preds)
+  
+}
+
+model_preds <- ggplot() + 
+      geom_point(data = insecticide_consumption, aes(x = number_of_workers_at_exposure_start, y = summed_consumption, color = treatment)) +
+      geom_line(data = treatment_preds_df, aes(x = number_of_workers_at_exposure_start, y = predictions, group = treatment, color = treatment)) +
+      geom_ribbon(data = treatment_preds_df, aes(x = number_of_workers_at_exposure_start, y = predictions, ymin = lowconf, ymax = upconf,
+                                              group = treatment, color = treatment, fill = treatment), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#332288", "#AA4499"), name = "Treatment", labels = c("FPF", "Sivanto")) +
+      scale_fill_manual(values=c("#332288", "#AA4499"), name = "Treatment", labels = c("FPF", "Sivanto")) +
+      xlab("Starting worker number") +
+      ylab("Insecticide consumption (µg)") +
+      ggtitle("Insecticide consumption by treatment group")
+
+model_preds
+
+```
+
+Figure output
+
+```{r}
+# treatment
+pdf(file = "output/insecticide_consumption_plot.pdf",   # The directory you want to save the file in
+  width = 8, # The width of the plot in inches
+  height = 6) # The height of the plot in inches
+
+model_preds
+
+ dev.off()
+```
+
+Model output table
+
+```{r}
+final_model_insect_con_summary_tab <- broom.mixed::tidy(x = M4a_centred)
+
+final_model_insect_con_summary_tab [4, 3] <- paste("block.", final_model_insect_con_summary_tab [4, 3], sep = "")
+
+final_model_insect_con_summary_tab [5, 3] <- paste("residual.", final_model_insect_con_summary_tab [5, 3], sep = "")
+
+final_model_insect_con_summary_tab [6, 3] <- final_model_insect_con_summary_tab [6, 2]
+
+final_model_insect_con_summary_tab <- final_model_insect_con_summary_tab [, -c(1,2)]
+
+library(kableExtra)
+
+options(knitr.kable.NA = '_')
+
+insect_con_model_pdf <- kbl(final_model_insect_con_summary_tab, digits = 3) %>%
+                                     kable_styling() %>%
+                                     add_header_above(header = c("Summary of LMM for insecticide consumption" = 6))
+
+save_kable(insect_con_model_pdf, "output/insecticide_consumption_model.pdf")
+```

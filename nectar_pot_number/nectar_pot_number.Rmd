@@ -49,7 +49,6 @@ Look at nectar pot / worker. This shows the highest ratio occur at the end of th
 # pot_num$ratio <- pot_num$nectar_pot_number / pot_num$worker_number
 ```
 
-
 Visualisations
 
 ```{r}
@@ -336,7 +335,7 @@ Before adding the offset variable this was the interpretation:
 
 Now the interpretation is simpler. There was no evidence of a difference between maximum nectar pot number between treatment groups once colony size, estimated by worker number, was taken into account.
 
-
+-----------------------
 
 Below is how to predict from a model with no offset. Slightly different coding so may be useful in future.
 
@@ -410,3 +409,10 @@ model_output <- ggplot() +
 
 model_output
 ```
+
+```{r}
+library(bookdown)
+
+knitr::write_bib(c(.packages(), "bookdown"), "packages.bib")
+```
+

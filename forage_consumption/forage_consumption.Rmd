@@ -519,7 +519,7 @@ boxplot(E_final ~ sucrose_consumption$treatment, main = "Treatment")
 abline(0, 0)
 
 # plot residual vs number_of_workers_at_exposure_start by treatment
-coplot(E6 ~ number_of_workers_at_exposure_start | treatment,
+coplot(E_final ~ number_of_workers_at_exposure_start | treatment,
        ylab = "Normalised Residuals", data = sucrose_consumption)
 
 summary(M_final)
@@ -548,7 +548,7 @@ boxplot(E_final ~ sucrose_consumption$treatment, main = "Treatment")
 abline(0, 0)
 
 # plot residual vs number_of_workers_at_exposure_start by treatment
-coplot(E6 ~ number_of_workers_at_exposure_start | treatment,
+coplot(E_final ~ number_of_workers_at_exposure_start | treatment,
        ylab = "Normalised Residuals", data = sucrose_consumption)
 
 summary(M_final)
