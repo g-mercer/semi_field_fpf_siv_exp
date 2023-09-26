@@ -12,6 +12,23 @@ knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 When running this markdown please run each section individually as there are shared variable names between sections. When you reach the end of a section run rm(list=ls()) and move onto the next section.
 
 ---------------------------------------------------
+
+Packages section
+
+```{r}
+library(tidyverse)
+library(nlme)
+library(lme4)
+library(cowplot)
+library(ggplot2)
+library(mgcv)
+library(glmmTMB)
+library(survival)
+library(survminer)
+library(coxme)
+```
+
+---------------------------------------------------
 Sucrose consumption
 
 Reminder: the csvs imported for analysis are linked from the output of data_transformation_cleaning, not db as usual. 
@@ -392,6 +409,13 @@ Model output table
 ```{r}
 library(broom.mixed)
 
+final_model <- lme(summed_consumption ~ number_of_workers_at_exposure_start + relevel(treatment, "flup"),
+          data = sucrose_consumption, method = "REML",
+          weights = varIdent(form= ~ 1 | treatment),
+          random = ~1 | block)
+
+summary(final_model)
+
 final_model_summary_tab <- broom.mixed::tidy(x = final_model)
 
 # change multiplication factors to residual variance in each group
@@ -752,7 +776,7 @@ Model output table
 ```{r}
 library(broom.mixed)
 
-final_model_pollen <- lme(summed_consumption ~ treatment + number_of_workers_at_exposure_start,
+final_model_pollen <- lme(summed_consumption ~ relevel(treatment, "flup") + number_of_workers_at_exposure_start,
                           data = pollen_consumption,
                           random =~ 1 | block, method = "REML")
 
@@ -778,15 +802,26 @@ save_kable(pollen_consumption_model_pdf, "output/pollen_consumption_model.pdf")
 Make a combined figure for sucrose and pollen consumption.
 
 ```{r}
-model_preds_sucrose <- model_preds_sucrose + theme(legend.position = "none")
-
 library(cowplot)
 
-pdf(file = "output/consumption_plots.pdf",   # The directory you want to save the file in
-  width = 8, # The width of the plot in inches
-  height = 6) # The height of the plot in inches
+model_preds_sucrose <- model_preds_sucrose + theme(legend.position = "none")
 
-plot_grid(model_preds_sucrose, model_preds, labels = c('A', 'B'))
+model_preds_pollen <- model_preds + theme(legend.position = "none")
+
+# extract the legend from one of the plots
+legend <- get_legend(
+  # create some space to the left of the legend
+  model_preds + theme(legend.box.margin = margin(0, 0, 0, 12))
+)
+
+# combo plot of all 4 worker number plots
+plots <- plot_grid(model_preds_sucrose, model_preds_pollen, labels = c('A', 'B'))
+
+pdf(file = "output/consumption_plots.pdf",   # The directory you want to save the file in
+  width = 10, # The width of the plot in inches
+  height = 7.5) # The height of the plot in inches
+
+plot_grid(plots, legend, rel_widths = c(1, 0.1), ncol = 2)
 
  dev.off()
 ```
@@ -1316,6 +1351,9 @@ lrtest(m_zinb_aaab, m_zinb_aaaba)
 lrtest(m_zinb_aaab, m_zinb_aaabb)
 
 # 0.01715 for treatment.
+
+# for report
+anova(m_zinb_aaab, m_zinb_aaabb)
 ```
 
 Final model is male_num ~ treatment + workers ZINB.
@@ -1385,7 +1423,6 @@ summary(goodness_fit)
 # observed vs fitted
 plot(x = male_number, y = fitted_values)
 abline(goodness_fit)
-
 ```
 
 Predict the model output. 
@@ -1504,7 +1541,7 @@ model_preds_ut <- ggplot() +
       scale_fill_manual(values=c("#117733", "#332288", "#AA4499"), name="Treatment", labels = c("Control", "FPF", "Sivanto")) +
       xlab("Starting worker number") +
       ylab("Male number") +
-      ggtitle("Change in male output over starting worker number for each treatment")
+      ggtitle("Male number")
 
 model_preds_ut
 ```
@@ -1551,8 +1588,686 @@ model_preds_ut
  dev.off()
 ```
 
+Run the final model with the 4 gynes included. Give them a weighting of 2
+
+```{r}
+# set flup to the intercept
+final_model_flup_int_gyne_inc <- glmmTMB(repro_num ~ relevel(treatment, "flup") + workers + (1|block/triad) + (1|camp_loc),
+                                         data = male_num,
+                                         family = "nbinom2",
+                                         zi = ~1,
+                                         REML=TRUE)
+
+summary(final_model_flup_int_gyne_inc)
+```
+
+Export model summary table
+
+```{r}
+final_model_male_num_summary_tab_gynes_inc <- broom.mixed::tidy(x = final_model_flup_int_gyne_inc)
+
+final_model_male_num_summary_tab_gynes_inc [5, 4] <- paste("zi.", final_model_male_num_summary_tab_gynes_inc [5, 4], sep = "")
+
+final_model_male_num_summary_tab_gynes_inc [6, 4] <- paste("triad.", final_model_male_num_summary_tab_gynes_inc [6, 4], sep = "")
+
+final_model_male_num_summary_tab_gynes_inc [7, 4] <- paste("block.", final_model_male_num_summary_tab_gynes_inc [7, 4], sep = "")
+
+final_model_male_num_summary_tab_gynes_inc [8, 4] <- paste("camp_loc.", final_model_male_num_summary_tab_gynes_inc [8, 4], sep = "")
+
+final_model_male_num_summary_tab_gynes_inc <- final_model_male_num_summary_tab_gynes_inc [, 4:8]
+
+library(kableExtra)
+
+options(knitr.kable.NA = '_')
+
+repro_number_model_pdf <- kbl(final_model_male_num_summary_tab_gynes_inc, digits = 3) %>%
+                                     kable_styling() %>%
+                                     add_header_above(header = c("Summary of ZINB for reproductive number including gynes" = 5))
+
+save_kable(repro_number_model_pdf, "output/reproductive_number_model.pdf")
+```
+
 ---------------------------------------------------
 Reproductive mass
+
+```{r}
+# import
+repro_mass <- read.csv("input/total_reproductive_mass.csv")
+
+# sort variable classes
+repro_mass$block <- as.factor(repro_mass$block)
+repro_mass$triad <- as.factor(repro_mass$triad)
+repro_mass$treatment <- as.factor(repro_mass$treatment)
+repro_mass$campus_location <- as.factor(repro_mass$campus_location)
+repro_mass$wax_moth <- as.factor(repro_mass$wax_moth)
+repro_mass$number_of_workers_at_exposure_start <- as.numeric(repro_mass$number_of_workers_at_exposure_start)
+repro_mass$time_to_egg_laying <- as.numeric(repro_mass$time_to_egg_laying)
+repro_mass$total_reproductive_mass_g <- as.numeric(repro_mass$total_reproductive_mass_g)
+
+# remove colony 57 where I accidently killed the queen
+repro_mass <- repro_mass [repro_mass$colony_number != "57",]
+```
+
+This analysis is in many ways going to closely mirror the male number analysis as this time I have decided to use total reproductive mass per colony as an explanatory variable. There were three reasons for this. It easily incorporates the queens, it more closely aligns with the male number analysis approach, making comparison easier, and it was far less time consuming in the lab as it only required 60 mass measurements instead of over 3800. 
+
+repro_mass \~ treatment + starting_worker_number + (1\|block/triad) + (1\|campus_location)
+
+Additionally, two other fixed effects may be important - wax_moth and time to egg laying
+
+So my starting model will be:
+
+repro_mass \~ treatment + starting_worker_number + wax_moth + TTEL + (1\|block/triad) + (1\|campus_location)
+
+with the suspicion that TTEL will not have much of an effect and can probably be dropped.
+
+Interaction terms are another hurdle. Treatment could negatively interact with starting worker number (as starting worker number increases the effect of treatment decreases) and positively interact with wax moth (the insecticide treatment groups could have a greater effect when wax moth is present due to synergy)
+
+adding in these consideration I end up with:
+
+repro_mass \~ treatment + log(starting_worker_number) + wax_moth + TTEL + treatment:log(starting_worker_number) + treatment:wax_moth + (1\|block/triad) + (1\|campus_location)
+
+There is also the annoyance that when starting_worker_number = 0 repro_massber = 0 (a queen, as far as I'm aware always produces workers first, if she never produces workers she'll never go on to produce males). This is not that much of an issue as I am not trying to extrapolate beyond the data to make predictions of any kind. Again, like male number I am expecting that a diminishing returns relationship with starting worker number is most suitable.
+
+```{r}
+# rename variables first to make life easier
+colnames(repro_mass) <- c("col_num", "block", "treatment", "triad",
+                        "camp_loc", "rear_loc", "workers", "TTEL", "TT6W", "TTES", "QCD",
+                        "wax_moth", "queen_surv", "repro_mass")
+
+# untransformed starting worker number
+repro_mass$workers_ut <- repro_mass$workers
+
+# simple plot of worker vs total repro mass
+plot(x = repro_mass$workers_ut, y = repro_mass$repro_mass)
+with(subset(repro_mass,repro_mass>0), lines(lowess(repro_mass~workers_ut)))
+```
+
+Data Exploration
+
+Look for outliers in the response and explanatory variables.
+
+Sort out the cleveland dotplot encoding.
+
+```{r}
+# for a cleveland dotplot to work treatment has to be coded 1-3. 
+repro_mass$clevelandcode <- 0 
+
+for (i in 1:nrow(repro_mass)) {
+  
+  if (repro_mass$treatment [i] == "control") {
+    
+    repro_mass$clevelandcode [i] <- 1
+    
+  }
+  
+  if (repro_mass$treatment [i] == "flup") {
+    
+    repro_mass$clevelandcode [i] <- 2
+    
+    }
+  
+  if (repro_mass$treatment [i] == "sivanto") {
+    
+    repro_mass$clevelandcode [i] <- 3
+    
+    }
+  
+}
+
+# should be numeric already anyway
+repro_mass$clevelandcode <- as.numeric(repro_mass$clevelandcode)
+```
+
+Produce some cleveland dotplots.
+
+```{r}
+op <- par(mfrow = c(4, 2), mar = c(3, 3, 3, 1))
+
+dotchart(repro_mass$repro_mass, main = "Total Repro Mass", group = repro_mass$clevelandcode)
+plot(0, 0, type = "n", axes = FALSE)
+dotchart(repro_mass$workers, main = "Workers At Start", group = repro_mass$clevelandcode)
+dotchart(repro_mass$TTEL, main = "TTEL", group = repro_mass$clevelandcode)
+# dotchart(repro_mass$TT6W, main = "TT6W", group = repro_mass$clevelandcode)
+# dotchart(repro_mass$TTES, main = "TTES", group = repro_mass$clevelandcode)
+# dotchart(repro_mass$QCD, main = "Queen Capture Day", group = repro_mass$clevelandcode)
+# dotchart(repro_mass$queen_surv, main = "Queen Survival", group = repro_mass$clevelandcode)
+
+par(op)
+```
+
+There is a small degree of skew for workers at start but there aren't any inputting errors. Transform to log(workers)
+
+```{r}
+repro_mass$workers <- log(repro_mass$workers)
+```
+
+```{r}
+dotchart(repro_mass$workers, main = "Workers At Start", group = repro_mass$clevelandcode)
+```
+
+```{r}
+# sources the functions required.
+source("~/local_package_source/HighstatLibV10.R")
+
+Z <- cbind(repro_mass$repro_mass, repro_mass$workers,
+           repro_mass$TTEL)
+
+colnames(Z) <- c("Repro Mass", "log(Workers at Start)", "TTEL")
+
+pairs(Z, lower.panel = panel.smooth2,
+upper.panel = panel.cor, diag.panel = panel.hist)
+```
+
+Look at boxplots for treatment, wax_moth, treatment:wax_moth, block and triad
+
+```{r}
+boxplot(repro_mass ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Reproductive Mass Vs Treatment", 
+        ylab = "Reproductive Mass", data = repro_mass)
+
+boxplot(repro_mass ~ wax_moth,
+        varwidth = TRUE, xlab = "Wax Moth",
+        main = "Boxplot of Reproductive Mass Vs Wax Moth", 
+        ylab = "Reproductive Mass", data = repro_mass)
+
+boxplot(repro_mass ~ wax_moth:treatment,
+        varwidth = TRUE, xlab = "Wax Moth:Treatment",
+        main = "Boxplot of Reproductive Mass Vs Wax Moth:Treatment", 
+        ylab = "Reproductive Mass", data = repro_mass)
+
+boxplot(repro_mass ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Boxplot of Reproductive Mass Vs Block", 
+        ylab = "Reproductive Mass", data = repro_mass)
+
+boxplot(repro_mass ~ triad,
+        varwidth = TRUE, xlab = "Triad",
+        main = "Boxplot of Reproductive Mass Vs Triad", 
+        ylab = "Reproductive Mass", data = repro_mass)
+
+```
+
+Triad and block look important, treatment and wax moth look to have no effect. wax_moth:treatment is hard to interpret due to the low sample size for some combinations (Y:Sivanto = 3).
+
+Centre log(starting worker number) and TTEL to aid intercept interpretation.
+
+```{r}
+mean_log_workers <- mean(repro_mass$workers)
+
+repro_mass$workers <- repro_mass$workers - mean(repro_mass$workers)
+
+repro_mass$TTEL <- repro_mass$TTEL - mean(repro_mass$TTEL)
+```
+
+In this case I have continuous data that is right skewed and some 0s. Zero inflated gamma works for this.
+
+```{r}
+library(glmmTMB)
+
+f1 <- formula(repro_mass ~ treatment + wax_moth + workers + TTEL + treatment:workers + treatment:wax_moth + (1|block/triad) + (1|camp_loc))
+
+# ziGamma
+m_gamma_full <- glmmTMB(f1,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1)
+
+summary(m_gamma_full)
+
+# gaussian
+m_gaussian_full <- glmmTMB(f1,
+              data = repro_mass,
+              family=gaussian(link="log"),
+              start = 0,
+              ziformula=~1)
+
+summary(m_gaussian_full)
+
+# ziGamma is better. Look at residual plots.
+```
+
+Below I use DHARMa for residual plots. Here is the [vignette](https://cran.r-project.org/web/packages/DHARMa/vignettes/DHARMa.html#calculating-scaled-residuals)
+
+```{r}
+E1 <- resid(m_gamma_full,type = "pearson")
+
+# vs workers 
+plot(x = repro_mass$workers, y = E1)
+abline(0,0)
+
+# vs fitted
+plot(x = fitted(m_gamma_full), y = E1)
+abline(0,0)
+
+# vs treatment 
+boxplot(E1 ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Pearson Residuals Vs Treatment", 
+        ylab = "Pearson Residuals", data = repro_mass)
+
+# vs block
+boxplot(E1 ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Boxplot of Pearson Residuals Vs Block", 
+        ylab = "Pearson Residuals", data = repro_mass)
+
+# vs camp_loc
+boxplot(E1 ~ camp_loc,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Boxplot of Pearson Residuals Vs Campus Location", 
+        ylab = "Pearson Residuals", data = repro_mass)
+
+# use the DHARMa package, which uses a simulation approach.
+library(DHARMa)
+
+simulationOutput <- simulateResiduals(fittedModel = m_gamma_full, plot = F)
+
+plot(simulationOutput)
+
+plotResiduals(simulationOutput, form = repro_mass$workers)
+```
+
+Perform model selection on the fixed effects of the model.
+
+```{r}
+# set REML=FALSE
+# ziGamma
+m_gamma_full <- glmmTMB(f1,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+f1 <- formula(repro_mass ~ treatment + wax_moth + workers + TTEL + treatment:workers + treatment:wax_moth + (1|block/triad) + (1|camp_loc))
+
+f1a <- formula(repro_mass ~ treatment + wax_moth + workers + TTEL + treatment:workers + (1|block/triad) + (1|camp_loc))
+
+f1b <- formula(repro_mass ~ treatment + wax_moth + workers + TTEL + treatment:wax_moth + (1|block/triad) + (1|camp_loc))
+
+f1c <- formula(repro_mass ~ treatment + wax_moth + workers + treatment:workers + treatment:wax_moth + (1|block/triad) + (1|camp_loc))
+
+
+m_gamma_1a <- glmmTMB(f1a,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+m_gamma_1b <- glmmTMB(f1b,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+m_gamma_1c <- glmmTMB(f1c,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+library(lmtest)
+
+lrtest(m_gamma_full, m_gamma_1a)
+lrtest(m_gamma_full, m_gamma_1b)
+lrtest(m_gamma_full, m_gamma_1c)
+
+# dropped treatment:wax_moth
+f1a <- formula(repro_mass ~ treatment + wax_moth + workers + TTEL + treatment:workers + (1|block/triad) + (1|camp_loc))
+
+f1aa <- formula(repro_mass ~ treatment + wax_moth + workers + TTEL + (1|block/triad) + (1|camp_loc))
+
+f1ab <- formula(repro_mass ~ treatment + wax_moth + workers + treatment:workers + (1|block/triad) + (1|camp_loc))
+
+f1ac <- formula(repro_mass ~ treatment + workers + TTEL + treatment:workers + (1|block/triad) + (1|camp_loc))
+
+m_gamma_1aa <- glmmTMB(f1aa,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+m_gamma_1ab <- glmmTMB(f1ab,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+m_gamma_1ac <- glmmTMB(f1ac,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+lrtest(m_gamma_1a, m_gamma_1aa)
+lrtest(m_gamma_1a, m_gamma_1ab)
+lrtest(m_gamma_1a, m_gamma_1ac)
+
+# dropped treatment:workers
+f1aa <- formula(repro_mass ~ treatment + wax_moth + workers + TTEL + (1|block/triad) + (1|camp_loc))
+
+f1aaa <- formula(repro_mass ~ treatment + wax_moth + workers + (1|block/triad) + (1|camp_loc))
+
+f1aab <- formula(repro_mass ~ treatment + wax_moth + TTEL + (1|block/triad) + (1|camp_loc))
+
+f1aac <- formula(repro_mass ~ treatment + workers + TTEL + (1|block/triad) + (1|camp_loc))
+
+f1aad <- formula(repro_mass ~ wax_moth + workers + TTEL + (1|block/triad) + (1|camp_loc))
+
+m_gamma_1aaa <- glmmTMB(f1aaa,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+m_gamma_1aab <- glmmTMB(f1aab,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+m_gamma_1aac <- glmmTMB(f1aac,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+m_gamma_1aad <- glmmTMB(f1aad,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+lrtest(m_gamma_1aa, m_gamma_1aaa)
+lrtest(m_gamma_1aa, m_gamma_1aab)
+lrtest(m_gamma_1aa, m_gamma_1aac)
+lrtest(m_gamma_1aa, m_gamma_1aad)
+
+# dropped TTEL
+f1aaa <- formula(repro_mass ~ treatment + wax_moth + workers + (1|block/triad) + (1|camp_loc))
+
+f1aaaa <- formula(repro_mass ~ treatment + wax_moth + (1|block/triad) + (1|camp_loc))
+
+f1aaab <- formula(repro_mass ~ treatment + workers + (1|block/triad) + (1|camp_loc))
+
+f1aaac <- formula(repro_mass ~ wax_moth + workers + (1|block/triad) + (1|camp_loc))
+
+m_gamma_1aaaa <- glmmTMB(f1aaaa,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+m_gamma_1aaab <- glmmTMB(f1aaab,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+m_gamma_1aaac <- glmmTMB(f1aaac,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+lrtest(m_gamma_1aaa, m_gamma_1aaaa)
+lrtest(m_gamma_1aaa, m_gamma_1aaab)
+lrtest(m_gamma_1aaa, m_gamma_1aaac)
+
+# dropped wax_moth 0.04 not a strong result during multiple rounds of hypothesis testing.
+# left with variables selected through experimental design
+f1aaab <- formula(repro_mass ~ treatment + workers + (1|block/triad) + (1|camp_loc))
+
+f1aaaba <- formula(repro_mass ~ treatment + (1|block/triad) + (1|camp_loc))
+
+f1aaabb <- formula(repro_mass ~ workers + (1|block/triad) + (1|camp_loc))
+
+m_gamma_1aaaba <- glmmTMB(f1aaaba,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+m_gamma_1aaabb <- glmmTMB(f1aaabb,
+              data = repro_mass,
+              family = ziGamma(link = "log"),
+              ziformula=~1,
+              REML=FALSE)
+
+lrtest(m_gamma_1aaab, m_gamma_1aaaba)
+lrtest(m_gamma_1aaab, m_gamma_1aaabb)
+```
+
+Final model is repro_mass ~ treatment + workers ZINB.
+
+```{r}
+final_model <- glmmTMB(repro_mass ~ treatment + workers + (1|block/triad) + (1|camp_loc),
+                       data = repro_mass,
+                       family = ziGamma(link = "log"),
+                       ziformula=~1,
+                       REML=TRUE)
+
+summary(final_model)
+
+# set flup to the intercept
+final_model_flup_int <- glmmTMB(repro_mass ~ relevel(treatment, "flup") + workers + (1|block/triad) + (1|camp_loc),
+                        data = repro_mass,
+                        family = ziGamma(link = "log"),
+                        ziformula=~1,
+                        REML=TRUE)
+
+summary(final_model_flup_int)
+```
+
+Model Validation. Plot the pearson residuals against each explanatory variable. No serious issues appear. 
+
+```{r}
+# use the DHARMa package, which uses a simulation approach.
+simulationOutput <- simulateResiduals(fittedModel = final_model_flup_int, plot = F)
+
+plot(simulationOutput)
+
+plotResiduals(simulationOutput, form = repro_mass$workers)
+
+plotResiduals(simulationOutput, form = repro_mass$treatment)
+
+plotResiduals(simulationOutput, form = repro_mass$block)
+
+plotResiduals(simulationOutput, form = repro_mass$camp_loc)
+
+# overall I think these plots show the model is pretty decent and can be used to back up the conclusions of the male_num model.
+```
+
+Predict the model output. 
+
+```{r}
+# predict male for each level of treatment
+D1_control <- data.frame(workers = seq(min(repro_mass$workers [repro_mass$treatment == "control"]),
+                                       max(repro_mass$workers [repro_mass$treatment == "control"]), length.out = 200),
+                         treatment = "control",
+                         block = NA,
+                         camp_loc = NA,
+                         triad = NA)
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_con <- setNames(as_tibble(predict(final_model,
+                                    D1_control,
+                                    se.fit = TRUE,
+                                    type = "link",
+                                    re.form = NA)[1:2]),
+                      c('fit_link','se_link'))
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_con <- mutate(ci_df_con,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(repro_mass [repro_mass$treatment == "control",]) -1) * se_link)), 
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(repro_mass [repro_mass$treatment == "control",]) -1) * se_link)))
+
+# --------------
+
+D1_flup <- data.frame(workers = seq(min(repro_mass$workers [repro_mass$treatment == "flup"]),
+                                    max(repro_mass$workers [repro_mass$treatment == "flup"]), length.out = 200),
+                         treatment = "flup",
+                         block = NA,
+                         camp_loc = NA,
+                         triad = NA)
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_flup <- setNames(as_tibble(predict(final_model,
+                                    D1_flup,
+                                    se.fit = TRUE,
+                                    type = "link",
+                                    re.form = NA)[1:2]),
+                      c('fit_link','se_link'))
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_flup <- mutate(ci_df_flup,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(repro_mass [repro_mass$treatment == "flup",]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(repro_mass [repro_mass$treatment == "flup",]) -1) * se_link)))
+
+# --------------
+
+D1_siv <- data.frame(workers = seq(min(repro_mass$workers [repro_mass$treatment == "sivanto"]),
+                                   max(repro_mass$workers [repro_mass$treatment == "sivanto"]), length.out = 200),
+                         treatment = "sivanto",
+                         block = NA,
+                         camp_loc = NA,
+                         triad = NA)
+
+ilink <- family(final_model)$linkinv
+
+# add fit and se.fit on the **link** scale.
+ci_df_siv <- setNames(as_tibble(predict(final_model,
+                                    D1_siv,
+                                    se.fit = TRUE,
+                                    type = "link",
+                                    re.form = NA)[1:2]),
+                      c('fit_link','se_link'))
+
+# create the interval and backtransform. fit_resp should be the same as results_prob above.
+ci_df_siv <- mutate(ci_df_siv,
+                fit_resp  = ilink(fit_link),
+                right_upr = ilink(fit_link + (-qt(.025, df = nrow(repro_mass [repro_mass$treatment == "sivanto",]) -1) * se_link)),
+                right_lwr = ilink(fit_link - (-qt(.025, df = nrow(repro_mass [repro_mass$treatment == "sivanto",]) -1) * se_link)))
+```
+
+ggplot of the above
+
+```{r}
+# combine line predictions
+ggplot_lines_df <- rbind(cbind(D1_control, ci_df_con), cbind(D1_flup, ci_df_flup), cbind(D1_siv, ci_df_siv))
+
+model_preds <- ggplot() + 
+      geom_point(data = repro_mass, aes(x = workers, y = repro_mass, color = treatment)) +
+      geom_line(data = ggplot_lines_df, aes(x = workers, y = fit_resp, group = treatment, color = treatment)) +
+      geom_ribbon(data = ggplot_lines_df, aes(x = workers, y = fit_resp, ymin = right_lwr, ymax = right_upr,
+                                              group = treatment, color = treatment, fill = treatment), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#117733", "#332288", "#AA4499"), name="Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      scale_fill_manual(values=c("#117733", "#332288", "#AA4499"), name="Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      xlab("Centred Log(Starting Worker Number)") +
+      ylab("Reproductive mass per colony") +
+      ggtitle("Change in reproductive mass over starting worker number for each treatment")
+
+model_preds
+```
+
+Plot on untransformed worker number
+
+```{r}
+ggplot_lines_df$workers_ut <- exp(ggplot_lines_df$workers + mean_log_workers)
+
+model_preds_ut_mass <- ggplot() + 
+      geom_point(data = repro_mass, aes(x = workers_ut, y = repro_mass, color = treatment)) +
+      geom_line(data = ggplot_lines_df, aes(x = workers_ut, y = fit_resp, group = treatment, color = treatment)) +
+      geom_ribbon(data = ggplot_lines_df, aes(x = workers_ut, y = fit_resp, ymin = right_lwr, ymax = right_upr,
+                                              group = treatment, color = treatment, fill = treatment), alpha = 0.3) +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      scale_color_manual(values=c("#117733", "#332288", "#AA4499"), name="Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      scale_fill_manual(values=c("#117733", "#332288", "#AA4499"), name="Treatment", labels = c("Control", "FPF", "Sivanto")) +
+      xlab("Starting worker number") +
+      ylab("Reproductive mass per colony (g)") +
+      ggtitle("Reproductive mass")
+
+model_preds_ut_mass
+```
+
+Create a combined plot of male number and reproductive mass.
+
+```{r}
+# extract the legend from one of the plots
+legend <- get_legend(
+  # create some space to the left of the legend
+  model_preds_ut + theme(legend.box.margin = margin(0, 0, 0, 12))
+)
+
+model_preds_ut <- model_preds_ut + theme(legend.position="none")
+
+model_preds_ut_mass <- model_preds_ut_mass + theme(legend.position="none")
+
+# combo plot of all 4 worker number plots
+plots <- plot_grid(model_preds_ut, model_preds_ut_mass, labels = c('A', 'B'))
+
+# treatment
+pdf(file = "output/repro_output_plots_combined.pdf",   # The directory you want to save the file in
+  width = 10, # The width of the plot in inches
+  height = 7.5) # The height of the plot in inches
+
+# add the legend to the row we made earlier.
+plot_grid(plots, legend, rel_widths = c(1, 0.1), ncol = 2)
+
+ dev.off() 
+```
+
+Model table output
+
+```{r}
+final_model_repro_mass_summary_tab <- broom.mixed::tidy(x = final_model_flup_int)
+
+final_model_repro_mass_summary_tab [5, 4] <- paste("zi.", final_model_repro_mass_summary_tab [5, 4], sep = "")
+
+final_model_repro_mass_summary_tab [6, 4] <- paste("triad.", final_model_repro_mass_summary_tab [6, 4], sep = "")
+
+final_model_repro_mass_summary_tab [7, 4] <- paste("block.", final_model_repro_mass_summary_tab [7, 4], sep = "")
+
+final_model_repro_mass_summary_tab [8, 4] <- paste("camp_loc.", final_model_repro_mass_summary_tab [8, 4], sep = "")
+
+final_model_repro_mass_summary_tab <- final_model_repro_mass_summary_tab [, 4:8]
+
+library(kableExtra)
+
+options(knitr.kable.NA = '_')
+
+repro_mass_model_pdf <- kbl(final_model_repro_mass_summary_tab, digits = 3) %>%
+                                     kable_styling() %>%
+                                     add_header_above(header = c("Summary of ZINB for reproductive mass" = 5))
+
+save_kable(repro_mass_model_pdf, "output/repro_mass_model.pdf")
+```
+
+Export male number plot
+
+```{r}
+# model_preds <- model_preds + theme(legend.position = "none")
+
+library(cowplot)
+
+pdf(file = "output/repro_mass_plot.pdf",   # The directory you want to save the file in
+  width = 8, # The width of the plot in inches
+  height = 6) # The height of the plot in inches
+
+model_preds_ut
+
+ dev.off()
+```
+
 ---------------------------------------------------
 Worker number
 
@@ -1936,6 +2651,8 @@ final_model_flup_int <- gam(worker_number ~ relevel(treatment, "flup") +
                     data = work_num)
 
 summary(final_model_flup_int)
+
+plot(final_model_flup_int, shade = TRUE, pages = 1, scale = 0, seWithMean = TRUE)
 ```
 
 ```{r}
@@ -2052,7 +2769,7 @@ model_preds <- ggplot() +
       scale_fill_manual(values=c("#117733", "#332288", "#AA4499"), name = "Treatment", labels = c("Control", "FPF", "Sivanto")) +
       xlab("Experiment day") +
       ylab("Worker number") +
-      ggtitle("Change in worker number over time by treatment")
+      ggtitle("Change in worker number")
 
 model_preds
 ```
@@ -2062,6 +2779,105 @@ The predictions for t=0 don't match the parametric coefficients. Why? Because th
 [explanation](https://stats.stackexchange.com/questions/100425/prediction-from-gam-model-at-x-0-not-equal-to-intercept)
 
 Summary: it is nothing to worry about.
+
+What is the need for the parametric coefficient term?
+
+[explanation-1](https://fromthebottomoftheheap.net/2017/10/10/difference-splines-i/)
+
+"Smooth-factor interactions can be estimated using gam() in a number of different ways. Here we use by-variable smooths. Each of the separate smooths is subject to identifiability constraints, which effectively centres each smooth around zero effect. As such, differences in the mean Hg concentrations of the lochs is not accounted for by the smooths. The rectify this we’ll need to add SiteCode as a parametric term to the model, along with the smooths."
+
+[explanation-2](https://stats.stackexchange.com/questions/531758/interpretation-of-parametric-coefficients-in-gam)
+
+Answer from Gavin Simpson (author of mgcv i think), "The reason you need to include f as a parametric term in this model is because there is nothing in the s(x, by = f) part of the model that represents the group means of the response, as each of the smooths associated with the factor-by term are centred due to the imposition of the identifiability constraints."
+
+Pretty smoother plots
+
+```{r}
+# evaluate the smooths
+sm <- smooth_estimates(final_model_flup_int) %>%
+  add_confint()
+
+tech_fpf_smoother <- sm %>%
+  filter(smooth == "s(experiment_census_day)") %>%
+  ggplot() +
+  geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci, x = experiment_census_day, color = "#332288", fill = "#332288"),
+              alpha = 0.2) +
+  geom_line(aes(x = experiment_census_day, y = est, color = "#332288")) +
+  labs(y = "Partial effect", title = "Technical-FPF smoother")
+
+control_diff_smoother <- sm %>%
+  filter(smooth == "s(experiment_census_day):treatment_ord_flup_intcontrol") %>%
+  ggplot() +
+  geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci, x = experiment_census_day, color = "#117733", fill = "#117733"),
+              alpha = 0.2) +
+  geom_line(aes(x = experiment_census_day, y = est, color = "#117733")) +
+  labs(y = "Partial effect", title = "Control difference smoother")
+
+sivanto_prime_diff_smoother <- sm %>%
+  filter(smooth == "s(experiment_census_day):treatment_ord_flup_intsivanto") %>%
+  ggplot() +
+  geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci, x = experiment_census_day, color = "#AA4499", fill = "#AA4499"),
+              alpha = 0.2) +
+  geom_line(aes(x = experiment_census_day, y = est, color = "#AA4499")) +
+  labs(y = "Partial effect", title = "Sivanto Prime difference smoother")
+
+#######################
+tech_fpf_smoother <- tech_fpf_smoother +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  scale_color_manual(values=c("#332288")) +
+  scale_fill_manual(values=c("#332288")) +
+  xlab("Experiment day") +
+  theme(legend.position = "none")
+
+control_diff_smoother <- control_diff_smoother +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  scale_color_manual(values=c("#117733")) +
+  scale_fill_manual(values=c("#117733")) +
+  xlab("Experiment day") +
+  theme(legend.position = "none")
+
+sivanto_prime_diff_smoother <- sivanto_prime_diff_smoother +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  scale_color_manual(values=c("#AA4499")) +
+  scale_fill_manual(values=c("#AA4499")) +
+  xlab("Experiment day") +
+  theme(legend.position = "none")
+
+bottom_row <- plot_grid(control_diff_smoother, sivanto_prime_diff_smoother, labels = c('B', 'C'), nrow = 1)
+
+# treatment
+pdf(file = "output/worker_number_smoothers.pdf",   # The directory you want to save the file in
+  width = 8, # The width of the plot in inches
+  height = 6) # The height of the plot in inches
+
+plot_grid(tech_fpf_smoother, bottom_row,  labels = c('A', ''), ncol = 1)
+
+ dev.off()
+ 
+# extract the legend from one of the plots
+legend <- get_legend(
+  # create some space to the left of the legend
+  model_preds + theme(legend.box.margin = margin(0, 0, 0, 12))
+)
+
+model_preds <- model_preds + theme(legend.position="none")
+
+# combo plot of all 4 worker number plots
+plots <- plot_grid(model_preds, tech_fpf_smoother, control_diff_smoother, sivanto_prime_diff_smoother, labels = c('A', 'B', 'C', 'D'))
+
+# treatment
+pdf(file = "output/worker_number_plots_combined.pdf",   # The directory you want to save the file in
+  width = 10, # The width of the plot in inches
+  height = 7.5) # The height of the plot in inches
+
+# add the legend to the row we made earlier.
+plot_grid(plots, legend, rel_widths = c(1, 0.1), ncol = 2)
+
+ dev.off() 
+```
 
 Show the difference between block. treatment=control and campus_location=M.
 
@@ -2446,6 +3262,91 @@ model_preds_CL
 
  dev.off()
 
+```
+
+Just looking at maximum worker number. Not significant.
+
+```{r}
+col_num <- unique(work_num$colony_number)
+
+max_worker_num <- tibble()
+
+for (i in 1:length(col_num)) {
+  
+  by_col <- work_num [work_num$colony_number == col_num [i], ]
+  
+  max_worker_row <- by_col [by_col$worker_number == max(by_col$worker_number), ]
+  
+  max_worker_num <- rbind(max_worker_num, max_worker_row)
+  
+}
+
+# remove one of the rows for col 72 as there were two weeks where worker number was max
+max_worker_num <- max_worker_num [!((max_worker_num$colony_number == 72) & (max_worker_num$experiment_census_day == 35)),]
+
+# boxplots
+boxplot(worker_number~treatment,
+        varwidth=TRUE,
+        data = max_worker_num)
+
+# fit the full model straight off the bat. Try poisson and NB
+library(glmmTMB)
+
+max_worker_num$number_of_workers_at_exposure_start <- log(max_worker_num$number_of_workers_at_exposure_start) - mean(log(max_worker_num$number_of_workers_at_exposure_start))
+
+# set flup to the intercept
+final_model_flup_int_poiss <- glmmTMB(worker_number ~ relevel(treatment, "flup") + number_of_workers_at_exposure_start + (1|block/triad) + (1|campus_location),
+              data = max_worker_num,
+              family = "poisson",
+              REML=TRUE)
+
+summary(final_model_flup_int_poiss)
+
+# check overdispersion
+dispfun <- function(m) {
+    r <- residuals(m,type="pearson")
+    n <- df.residual(m)
+    dsq <- sum(r^2)
+    c(dsq=dsq,n=n,disp=dsq/n)
+}
+
+sapply(list(poisson=final_model_flup_int_poiss),dispfun)
+
+# overdispersed so nb
+final_model_flup_int_nb <- glmmTMB(worker_number ~ relevel(treatment, "flup") + number_of_workers_at_exposure_start + (1|block/triad) + (1|campus_location),
+              data = max_worker_num,
+              family = "nbinom2",
+              REML=TRUE)
+
+summary(final_model_flup_int_nb)
+
+final_model_e <- residuals(final_model_flup_int_nb, type = "pearson")
+
+# vs workers 
+plot(x = max_worker_num$number_of_workers_at_exposure_start, y = final_model_e)
+abline(0,0)
+
+# vs fitted
+plot(x = fitted(final_model_flup_int_nb), y = final_model_e)
+abline(0,0)
+
+# vs treatment 
+boxplot(final_model_e ~ treatment,
+        varwidth = TRUE, xlab = "Treatment",
+        main = "Boxplot of Pearson Residuals Vs Treatment", 
+        ylab = "Pearson Residuals", data = max_worker_num)
+
+# vs block
+boxplot(final_model_e ~ block,
+        varwidth = TRUE, xlab = "Block",
+        main = "Boxplot of Pearson Residuals Vs Block", 
+        ylab = "Pearson Residuals", data = max_worker_num)
+
+# vs camp_loc
+boxplot(final_model_e ~ campus_location,
+        varwidth = TRUE, xlab = "Campus Location",
+        main = "Boxplot of Pearson Residuals Vs Campus Location", 
+        ylab = "Pearson Residuals", data = max_worker_num)
 ```
 
 ---------------------------------------------------
@@ -3092,6 +3993,19 @@ m_nb1 <- glmmTMB(f1,
               family = "nbinom1")
 
 summary(m_nb1)
+
+# treatment significance test
+m_nb1_reml_false <- glmmTMB(f1,
+              data = max_pot,
+              family = "nbinom1",
+              REML=FALSE)
+
+m_nb1_no_treat <- glmmTMB(max_pot ~ offset(log(worker_number)) + (1|block/triad) + (1|campus_location),
+              data = max_pot,
+              family = "nbinom1",
+              REML=FALSE)
+
+anova(m_nb1_reml_false, m_nb1_no_treat)
 ```
 
 Residual plots. Nothing jumps out apart from one large outlier, the colony with 36 nectar pots when there were only 27 workers. However, there is no reason for me to remove this observation. Also, removing it doesn't change the conclusions. Residual vs fitted tends towards overestimation for larger values but not serious enough to worry about for this secondary analysis.
@@ -3119,6 +4033,39 @@ boxplot(E~block,
 boxplot(E~campus_location,
         varwidth=TRUE,
         data = max_pot)
+```
+Run model without large outlier
+
+```{r}
+# remove col 203, the outlier
+max_pot_no_outlier <- max_pot [max_pot$colony_number != "203", ]
+
+# nb1
+m_nb1_no_outlier <- glmmTMB(f2,
+              data = max_pot_no_outlier,
+              family = "nbinom1")
+
+summary(m_nb1_no_outlier)
+
+final_model_nectar_pot_summary_tab_no_outlier <- broom.mixed::tidy(x = m_nb1_no_outlier)
+
+final_model_nectar_pot_summary_tab_no_outlier [4, 4] <- paste("triad:block.", final_model_nectar_pot_summary_tab_no_outlier [4, 4], sep = "")
+
+final_model_nectar_pot_summary_tab_no_outlier [5, 4] <- paste("block.", final_model_nectar_pot_summary_tab_no_outlier [5, 4], sep = "")
+
+final_model_nectar_pot_summary_tab_no_outlier [6, 4] <- paste("campus_location.", final_model_nectar_pot_summary_tab_no_outlier [6, 4], sep = "")
+
+final_model_nectar_pot_summary_tab_no_outlier <- final_model_nectar_pot_summary_tab_no_outlier [, -c(1:3)]
+
+library(kableExtra)
+
+options(knitr.kable.NA = '_')
+
+nectar_pot_model_pdf <- kbl(final_model_nectar_pot_summary_tab_no_outlier, digits = 3) %>%
+                                     kable_styling() %>%
+                                     add_header_above(header = c("Summary of quasi-poisson model for maximum nectar pot number with no outlier" = 5))
+
+save_kable(nectar_pot_model_pdf, "output/nectar_pot_model_no_outlier.pdf")
 ```
 
 Predictions for the offset variable model
@@ -3195,7 +4142,9 @@ model_output <- ggplot() +
   #         label = c("p = 0.864","p = 0.347"),
   #         family = "", fontface = 3, size=4) +
   
-  ggtitle("Maximum nector pot number per worker for each treatment group")
+  ggtitle("Maximum nector pot number per worker for each treatment group") +
+  
+  ylim(0, 0.8)
   
   # annotate(geom = "text", x = 2.65, y = 37, label = "bold('Control vs Sivanto,')~bolditalic('p')~bold('= 0.0207')", fontface = 2, size = 6, parse = TRUE)
 
@@ -3219,6 +4168,8 @@ Model output table
 m_nb1 <- glmmTMB(f2,
               data = max_pot,
               family = "nbinom1")
+
+summary(m_nb1)
 
 final_model_nectar_pot_summary_tab <- broom.mixed::tidy(x = m_nb1)
 
